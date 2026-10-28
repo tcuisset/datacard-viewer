@@ -47,9 +47,37 @@ Select a channel, one process / all backgrounds / all processes, and a shape nui
 Backgrounds have positive process IDs; signals have zero or negative IDs. Search
 nuisances by name or use their datacard groups and previous/next controls.
 
+### Multiple channels
+
+Enable **Show multiple channels**, then choose channels in the multiselect. Their
+selection order is the left-to-right plot order; remove and re-add a channel to
+move it. Turning the toggle off restores the last single-channel selection.
+
+Each channel occupies a separate segment in both panels, with its own physical
+observable tick labels, channel header, and boundary. Segment widths are proportional
+to the observable ranges; bin widths are preserved within each segment. Tooltips
+identify the channel and original bin interval. Curves and uncertainty bands stop
+at channel boundaries.
+
+The process grouping and nuisance are shared. Individual-process choices must be
+present in every selected channel. Nuisances can affect any selected channel;
+unaffected channels keep their nominal shapes. A missing/unreadable template stops
+the plot with its channel identified, rather than silently changing its contents.
+
+In this mode **Remove normalization effect** applies one common Up scale and one
+common Down scale using the totals across all selected channels. Relative yield
+changes between channels remain visible. Integral metrics show raw totals, and the
+table shows each channel's raw yields and diagnostics. Diagnostic shape residuals
+continue to remove normalization independently within each channel and are distinct
+from this global plotting normalization.
+
+CSV exports include channel names, display order, original bin edges, and shifted
+display coordinates. HTML exports preserve the segmented figure. **Scan selected
+channels** scans all selected channels; whole-card scans are unchanged.
+
 The upper panel overlays nominal, Up, and Down bin yields using physical bin edges.
-The lower panel shows variation/nominal. **Remove normalization effect** rescales
-variations to the nominal integral. The displayed integral metrics always describe
+The lower panel shows variation/nominal. Its y-axis fits the finite Up/nominal and Down/nominal curves, including the reference at one, with 10% padding. Statistical bands do not affect this range and may extend beyond the visible panel. **Remove normalization effect** rescales
+variations to the nominal integral in single-channel mode. The displayed integral metrics always describe
 the original templates. PNG export is in Plotly's toolbar; the buttons export plotted
 bin contents and variances as CSV, or an interactive standalone HTML plot.
 

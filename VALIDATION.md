@@ -27,3 +27,22 @@ The initial reader prototype exceeded the memory target when it counted only
 numeric buffer sizes. The shipped cache also accounts for Python/NumPy objects,
 provenance strings, and cache overhead. Cached directory metadata prevents repeatedly
 parsing ROOT key lists. Re-running timings on other cards/storage is advised.
+
+## Multi-channel display — 28 October 2026
+
+- Full suite: 22 passing cases; lint and whitespace checks pass.
+- Added deterministic checks for unequal observable ranges, variable bin widths,
+  repeated ticks, channel order, independent band segments, and original-coordinate
+  tooltips/exports. Shared normalization preserves channel migrations and scales
+  variances by the square of the common factor.
+- Streamlit tests cover unaffected channels, common-process selection, empty
+  selections, selected-channel scan scope, switching back to single-channel mode,
+  and a missing template preventing partial combined plots.
+- Fixed and regression-tested the pre-existing same-card Reload path: it must
+  recreate a reader after clearing it, even if its identity is unchanged.
+- On the combined example, server-side AppTest timings for four backgrounds-sum
+  channels were 1.43 seconds for the initial selection, 0.79 seconds for shared
+  normalization, and 0.90 seconds for moving to the next nuisance.
+- Browser inspection exercised two, three, and four channels, including a jet-scale
+  nuisance with summed backgrounds. Channel headers and repeated physical ticks
+  are visible in both aligned panels; curve/band segments remain separated.

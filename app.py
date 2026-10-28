@@ -17,7 +17,7 @@ from datacard_viewer.core import (
     fingerprint,
     summarize,
 )
-from datacard_viewer.plotting import bins_frame, figure
+from datacard_viewer.plotting import bins_frame, channel_figure, channels_frame, figure
 from datacard_viewer.reporting import scan_exports
 
 st.set_page_config(page_title="Combine shape viewer", page_icon="📊", layout="wide")
@@ -60,7 +60,7 @@ def cancel_scans():
 
 
 @st.fragment(run_every=1)
-def scan_panel(card, mappings, mass, keywords, threshold, channel):
+def scan_panel(card, mappings, mass, keywords, threshold, channels):
     st.subheader("Nuisance diagnosis")
     st.caption(
         "Candidates are checked separately for every affected channel/process pair. "
@@ -71,9 +71,12 @@ def scan_panel(card, mappings, mass, keywords, threshold, channel):
         st.session_state.get(k) and not st.session_state[k].done
         for k in ("scan", "channel_scan")
     )
-    if a.button("Scan selected channel", disabled=active):
+    if a.button(
+        "Scan selected channels" if len(channels) > 1 else "Scan selected channel",
+        disabled=active,
+    ):
         st.session_state["channel_scan"] = Scan(
-            card, mappings, mass, keywords, [channel]
+            card, mappings, mass, keywords, channels
         ).start()
     if b.button("Scan whole card", disabled=active):
         st.session_state["scan"] = Scan(card, mappings, mass, keywords).start()
@@ -89,6 +92,11 @@ def scan_panel(card, mappings, mass, keywords, threshold, channel):
         if not job:
             continue
         st.markdown(f"**{title}**")
+        if key == "channel_scan":
+            st.caption(
+                "Scan scope: "
+                + " · ".join(ch for ch in card.channels if ch in job.channels)
+            )
         rows, _ = job.snapshot()
         elapsed = (job.finished or time.monotonic()) - job.started
         status = (
@@ -130,9 +138,9 @@ def scan_panel(card, mappings, mass, keywords, threshold, channel):
                 mime="text/csv",
                 key=key + "_summary_download",
             )
-            with st.expander("Pair results for the current channel"):
+            with st.expander("Pair results for the selected channels"):
                 st.dataframe(
-                    pd.DataFrame([r for r in rows if r["channel"] == channel]),
+                    pd.DataFrame([r for r in rows if r["channel"] in channels]),
                     hide_index=True,
                     width="stretch",
                 )
@@ -147,29 +155,71 @@ def completed_exports(token, threshold, stale, _card, _rows, _channels):
 @st.fragment
 def inspector(card, reader, threshold, mappings, mass, keywords):
     if fingerprint(card.path) != card.revision:
-        st.rerun()  # Refresh the index even when only a fragment was rerun.
+        st.rerun()
     left, right = st.columns([1, 3])
     with left:
-        channel = st.selectbox("Channel", list(card.channels))
+        multiple = st.toggle("Show multiple channels", value=False)
+        last = st.session_state.get("last_channel", next(iter(card.channels)))
+        if last not in card.channels:
+            last = next(iter(card.channels))
+        if multiple:
+            if "multi_channels" not in st.session_state:
+                st.session_state["multi_channels"] = [last]
+            st.session_state["multi_channels"] = [
+                ch for ch in st.session_state["multi_channels"] if ch in card.channels
+            ]
+            channels = st.multiselect(
+                "Channels (left-to-right order)",
+                list(card.channels),
+                key="multi_channels",
+            )
+            if not channels:
+                st.info("Select at least one channel.")
+                return
+        else:
+            if st.session_state.get("single_channel") not in card.channels:
+                st.session_state["single_channel"] = last
+            channel = st.selectbox("Channel", list(card.channels), key="single_channel")
+            st.session_state["last_channel"] = channel
+            channels = [channel]
         selection = st.radio(
             "Processes", ["One process", "All backgrounds", "All processes"]
         )
+        common = [
+            p
+            for p in card.channels[channels[0]]
+            if all(p in card.channels[ch] for ch in channels)
+        ]
         process = st.selectbox(
-            "Process", card.channels[channel], disabled=selection != "One process"
+            "Process", common, disabled=selection != "One process" or not common
         )
-        processes = card.processes(channel, selection, process)
+        if multiple:
+            st.caption(
+                "Individual-process choices are common to every selected channel."
+            )
+        if selection == "One process" and not common:
+            st.info(
+                "No process is present in every selected channel. Choose a process sum or change channels."
+            )
+            scan_panel(card, mappings, mass, keywords, threshold, channels)
+            return
+        processes = {ch: card.processes(ch, selection, process) for ch in channels}
         group = st.selectbox("Nuisance group", ["All groups", *card.parsed.groups])
         search = st.text_input("Filter nuisance name")
         names = [
             n
-            for n in card.relevant.get(channel, [])
+            for n in card.nuisances
             if (group == "All groups" or n in card.parsed.groups[group])
             and search.lower() in n.lower()
-            and any((n, channel, p) in card.coefficients for p in processes)
+            and any(
+                (n, ch, p) in card.coefficients
+                for ch in channels
+                for p in processes[ch]
+            )
         ]
         if not names:
             st.info("No matching shape nuisances for this selection.")
-            scan_panel(card, mappings, mass, keywords, threshold, channel)
+            scan_panel(card, mappings, mass, keywords, threshold, channels)
             return
         if st.session_state.get("nuisance") not in names:
             st.session_state["nuisance"] = names[0]
@@ -183,19 +233,32 @@ def inspector(card, reader, threshold, mappings, mass, keywords):
         normalize = st.checkbox("Remove normalization effect")
         bands = st.checkbox("Show Up/Down statistical bands")
         log_y = st.checkbox("Logarithmic y-axis")
-        st.caption(f"{len(processes)} processes · {len(names)} matching nuisances")
+        st.caption(f"{len(channels)} channel(s) · {len(names)} matching nuisances")
+        if multiple and normalize:
+            st.caption(
+                "One common normalization across selected channels; relative channel yield changes remain visible."
+            )
     with right:
         st.subheader(nuisance)
-        st.caption(f"{channel} · {selection} · {card.nuisances[nuisance]}")
+        st.caption(f"{' · '.join(channels)} · {selection} · {card.nuisances[nuisance]}")
         try:
-            comparison = compare(reader, channel, processes, nuisance)
+            comparisons = []
+            for ch in channels:
+                try:
+                    comparisons.append(
+                        (ch, compare(reader, ch, processes[ch], nuisance))
+                    )
+                except Exception as exc:
+                    raise ValueError(f"Channel {ch}: {exc}") from exc
             warnings = list(
                 dict.fromkeys(
-                    (
-                        *comparison.warnings,
-                        *comparison.nominal.warnings,
-                        *comparison.up.warnings,
-                        *comparison.down.warnings,
+                    f"{ch}: {warning}"
+                    for ch, c in comparisons
+                    for warning in (
+                        *c.warnings,
+                        *c.nominal.warnings,
+                        *c.up.warnings,
+                        *c.down.warnings,
                     )
                 )
             )
@@ -211,16 +274,16 @@ def inspector(card, reader, threshold, mappings, mass, keywords):
                         st.write(notice)
             if log_y and any(
                 (h.values <= 0).any()
-                for h in (comparison.nominal, comparison.up, comparison.down)
+                for _, c in comparisons
+                for h in (c.nominal, c.up, c.down)
             ):
                 st.warning(
                     "Log y disabled: selected templates contain nonpositive bins."
                 )
                 log_y = False
             n, u, d = (
-                comparison.nominal.integral,
-                comparison.up.integral,
-                comparison.down.integral,
+                sum(getattr(c, name).integral for _, c in comparisons)
+                for name in ("nominal", "up", "down")
             )
             cols = st.columns(3)
             cols[0].metric("Nominal integral", f"{n:,.6g}")
@@ -232,7 +295,13 @@ def inspector(card, reader, threshold, mappings, mass, keywords):
                 f"{d:,.6g}",
                 f"{(d / n - 1) * 100:+.3g}%" if n else None,
             )
-            fig = figure(comparison, normalize, bands, log_y)
+            if multiple:
+                fig = channel_figure(comparisons, normalize, bands, log_y)
+                frame = channels_frame(comparisons, normalize)
+            else:
+                c = comparisons[0][1]
+                fig = figure(c, normalize, bands, log_y)
+                frame = bins_frame(c, normalize).assign(channel=channels[0])
             st.plotly_chart(fig, width="stretch", key="shape_plot")
             st.caption(
                 "Bands: stored template statistical errors. Ratio band: nominal fractional error reference, "
@@ -243,22 +312,31 @@ def inspector(card, reader, threshold, mappings, mass, keywords):
                     else ""
                 )
             )
-            diag = diagnose(comparison)
-            st.dataframe(pd.DataFrame([diag]), hide_index=True, width="stretch")
+            rows = [
+                dict(
+                    channel=ch,
+                    nominal=c.nominal.integral,
+                    up=c.up.integral,
+                    down=c.down.integral,
+                    **diagnose(c),
+                )
+                for ch, c in comparisons
+            ]
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
             st.caption(
-                "Aggregate diagnostics describe this plot; normalization-only screening uses individual processes."
+                "Diagnostics remove normalization separately within each channel; normalization-only screening uses individual processes."
+                + (
+                    " The plotted normalization instead uses totals across the selected channels."
+                    if multiple and normalize
+                    else ""
+                )
             )
+            frame = frame.assign(nuisance=nuisance, normalized=normalize)
+            frame["processes"] = frame.channel.map(lambda ch: " + ".join(processes[ch]))
             a, b = st.columns(2)
             a.download_button(
                 "Download plotted bins (CSV)",
-                bins_frame(comparison, normalize)
-                .assign(
-                    channel=channel,
-                    nuisance=nuisance,
-                    processes=" + ".join(processes),
-                    normalized=normalize,
-                )
-                .to_csv(index=False),
+                frame.to_csv(index=False),
                 "shape_bins.csv",
                 "text/csv",
             )
@@ -266,24 +344,27 @@ def inspector(card, reader, threshold, mappings, mass, keywords):
                 "Download interactive plot (HTML)",
                 fig.to_html(include_plotlyjs=True).replace(
                     "<body>",
-                    f"<body><h2>{html.escape(nuisance)}</h2><p>{html.escape(channel)} · {html.escape(selection)} · normalization removed: {normalize}</p>",
+                    f"<body><h2>{html.escape(nuisance)}</h2><p>{html.escape(' · '.join(channels))} · {html.escape(selection)} · normalization removed: {normalize}</p>",
                 ),
                 "shape_plot.html",
                 "text/html",
             )
             with st.expander("Template provenance and bin values"):
                 st.json(
-                    dict(
-                        coefficients=comparison.coefficients,
-                        nominal=comparison.nominal.sources,
-                        up=comparison.up.sources,
-                        down=comparison.down.sources,
-                    )
+                    {
+                        ch: dict(
+                            coefficients=c.coefficients,
+                            nominal=c.nominal.sources,
+                            up=c.up.sources,
+                            down=c.down.sources,
+                        )
+                        for ch, c in comparisons
+                    }
                 )
-                st.dataframe(bins_frame(comparison, normalize), hide_index=True)
+                st.dataframe(frame, hide_index=True)
         except Exception as exc:
             st.error(str(exc))
-    scan_panel(card, mappings, mass, keywords, threshold, channel)
+    scan_panel(card, mappings, mass, keywords, threshold, channels)
 
 
 def main():
@@ -343,7 +424,10 @@ def main():
             raise ValueError("Built-in substitution keywords cannot be overridden")
         card = load_card(fingerprint(path))
         identity = (card.revision, mappings, mass, tuple(keywords.items()))
-        if st.session_state.get("reader_identity") != identity:
+        if (
+            st.session_state.get("reader_identity") != identity
+            or "reader" not in st.session_state
+        ):
             cancel_scans()
             if st.session_state.get("reader"):
                 st.session_state["reader"].close()
