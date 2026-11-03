@@ -53,14 +53,21 @@ Enable **Show multiple channels**, then choose channels in the multiselect. Thei
 selection order is the left-to-right plot order; remove and re-add a channel to
 move it. Turning the toggle off restores the last single-channel selection.
 
+For bulk selection, enter part of a channel name in **Filter channel names** and
+click **Select matching channels**. Matching is case-insensitive, just like nuisance
+filtering. The button replaces the selection with all matches in datacard order;
+typing alone leaves the selection unchanged. Empty or unmatched filters disable
+the button. You can still adjust the result using the multiselect.
+
 Each channel occupies a separate segment in both panels, with its own physical
 observable tick labels, channel header, and boundary. Segment widths are proportional
 to the observable ranges; bin widths are preserved within each segment. Tooltips
 identify the channel and original bin interval. Curves and uncertainty bands stop
 at channel boundaries.
 
-The process grouping and nuisance are shared. Individual-process choices must be
-present in every selected channel. Nuisances can affect any selected channel;
+The process grouping and nuisance are shared. Individual-process choices include processes
+present in any selected channel. Absent processes contribute zero yield using the
+local channel binning, with a notice. Nuisances can affect any selected channel;
 unaffected channels keep their nominal shapes. A missing/unreadable template stops
 the plot with its channel identified, rather than silently changing its contents.
 

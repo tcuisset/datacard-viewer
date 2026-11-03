@@ -80,7 +80,7 @@ class Card:
     def processes(self, channel, selection, process=None):
         ps = self.channels[channel]
         if selection == "One process":
-            return [process or ps[0]]
+            return [process or ps[0]] if (process or ps[0]) in ps else []
         if selection == "All backgrounds":
             return [p for p in ps if not self.parsed.isSignal[p]]
         return list(ps)
@@ -340,6 +340,21 @@ class Comparison:
 
 
 def compare(reader, channel, processes, nuisance):
+    if not processes:
+        # Use local physical binning for an absent process or an empty group.
+        reference = reader.read(channel, reader.card.channels[channel][0])
+        zero = Template(
+            reference.edges.copy(),
+            np.zeros_like(reference.values),
+            np.zeros_like(reference.variances),
+        )
+        return Comparison(
+            zero,
+            zero,
+            zero,
+            ("No selected processes in this channel: zero yield.",),
+            {},
+        )
     nominal, up, down, warnings, coefficients = [], [], [], [], {}
     for process in processes:
         n = reader.read(channel, process)

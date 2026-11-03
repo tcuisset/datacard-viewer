@@ -168,6 +168,21 @@ def inspector(card, reader, threshold, mappings, mass, keywords):
             st.session_state["multi_channels"] = [
                 ch for ch in st.session_state["multi_channels"] if ch in card.channels
             ]
+            pattern = st.text_input(
+                "Filter channel names",
+                key="channel_filter",
+                help="Case-insensitive substring matching, like nuisance filtering. "
+                "Selecting matches replaces the channel selection in datacard order.",
+            ).strip()
+            matches = [
+                ch
+                for ch in card.channels
+                if pattern and pattern.casefold() in ch.casefold()
+            ]
+            if pattern:
+                st.caption(f"{len(matches)} matching channel(s)")
+            if st.button("Select matching channels", disabled=not matches):
+                st.session_state["multi_channels"] = matches
             channels = st.multiselect(
                 "Channels (left-to-right order)",
                 list(card.channels),
@@ -185,24 +200,14 @@ def inspector(card, reader, threshold, mappings, mass, keywords):
         selection = st.radio(
             "Processes", ["One process", "All backgrounds", "All processes"]
         )
-        common = [
-            p
-            for p in card.channels[channels[0]]
-            if all(p in card.channels[ch] for ch in channels)
-        ]
+        available = list(dict.fromkeys(p for ch in channels for p in card.channels[ch]))
         process = st.selectbox(
-            "Process", common, disabled=selection != "One process" or not common
+            "Process", available, disabled=selection != "One process"
         )
         if multiple:
             st.caption(
-                "Individual-process choices are common to every selected channel."
+                "Processes absent from a channel contribute zero yield in that channel."
             )
-        if selection == "One process" and not common:
-            st.info(
-                "No process is present in every selected channel. Choose a process sum or change channels."
-            )
-            scan_panel(card, mappings, mass, keywords, threshold, channels)
-            return
         processes = {ch: card.processes(ch, selection, process) for ch in channels}
         group = st.selectbox("Nuisance group", ["All groups", *card.parsed.groups])
         search = st.text_input("Filter nuisance name")
@@ -214,7 +219,7 @@ def inspector(card, reader, threshold, mappings, mass, keywords):
             and any(
                 (n, ch, p) in card.coefficients
                 for ch in channels
-                for p in processes[ch]
+                for p in (card.channels[ch] if multiple else processes[ch])
             )
         ]
         if not names:
@@ -264,7 +269,10 @@ def inspector(card, reader, threshold, mappings, mass, keywords):
             )
             flow_notices = [w for w in warnings if "under/overflow" in w]
             for warning in warnings:
-                if warning not in flow_notices:
+                if (
+                    warning not in flow_notices
+                    and "shape? log-normal fallback" not in warning
+                ):
                     st.warning(warning)
             if flow_notices:
                 with st.expander(

@@ -9,7 +9,7 @@ import pytest
 import uproot
 from streamlit.testing.v1 import AppTest
 
-from datacard_viewer.core import Comparison, Template
+from datacard_viewer.core import Card, Comparison, Reader, Template, compare
 from datacard_viewer.plotting import (
     channel_figure,
     channel_segments,
@@ -151,7 +151,16 @@ def test_multi_channel_ui_order_unaffected_scans_and_toggle(multi_card, monkeypa
     assert at.selectbox(key="single_channel").value == "two"
     at.toggle[0].set_value(True).run()
     at.multiselect(key="multi_channels").set_value(["one", "other"]).run()
-    assert any("No process is present" in info.value for info in at.info)
+    assert not at.exception and not at.error
+    assert len(at.get("plotly_chart")) == 1
+    process = next(s for s in at.selectbox if s.label == "Process")
+    assert process.options == ["b", "s", "different"]
+    assert any("zero yield" in w.value for w in at.warning)
+    process.set_value("different").run()
+    assert not at.exception and not at.error
+    assert len(at.get("plotly_chart")) == 1
+    assert next(m for m in at.metric if m.label == "Nominal integral").value == "30"
+    assert any("one: No selected processes" in w.value for w in at.warning)
     at.radio[0].set_value("All backgrounds").run()
     assert not at.exception
     at.multiselect(key="multi_channels").set_value([]).run()
@@ -222,3 +231,47 @@ def test_ratio_range_handles_zero_denominators_and_flat_variations():
     assert figure(flat).layout.yaxis2.range == pytest.approx([0.99, 1.01])
     undefined = comparison([0, 1], [0], [100], [100])
     assert figure(undefined).layout.yaxis2.range == pytest.approx([0.99, 1.01])
+
+
+def test_channel_name_filter_bulk_selection(multi_card, monkeypatch):
+    at = app(multi_card[0], monkeypatch)
+    at.toggle[0].set_value(True).run()
+    at.multiselect(key="multi_channels").set_value(["two", "one"]).run()
+
+    def select_matches():
+        return next(b for b in at.button if b.label == "Select matching channels")
+
+    assert select_matches().disabled
+    at.text_input(key="channel_filter").set_value("  ONE  ").run()
+    assert at.multiselect(key="multi_channels").value == ["two", "one"]
+    select_matches().click().run()
+    assert at.multiselect(key="multi_channels").value == ["one"]
+    assert not at.exception
+    at.radio[0].set_value("All backgrounds").run()
+    at.text_input(key="channel_filter").set_value("o").run()
+    select_matches().click().run()
+    assert at.multiselect(key="multi_channels").value == ["one", "two", "other"]
+    # Manual adjustments remain available, and filtering alone never drops them.
+    at.multiselect(key="multi_channels").set_value(["two", "one"]).run()
+    at.text_input(key="channel_filter").set_value("missing").run()
+    assert select_matches().disabled
+    assert at.multiselect(key="multi_channels").value == ["two", "one"]
+    assert any("0 matching channel" in c.value for c in at.caption)
+    at.text_input(key="channel_filter").set_value("   ").run()
+    assert select_matches().disabled
+    assert at.multiselect(key="multi_channels").value == ["two", "one"]
+    assert not at.exception
+
+
+def test_absent_process_has_local_binning_and_zero_errors(multi_card):
+    card = Card.load(multi_card[0])
+    reader = Reader(card)
+    try:
+        assert card.processes("other", "One process", "b") == []
+        result = compare(reader, "other", [], "norm")
+        np.testing.assert_array_equal(result.nominal.edges, [0, 1, 3])
+        for template in (result.nominal, result.up, result.down):
+            np.testing.assert_array_equal(template.values, [0, 0])
+            np.testing.assert_array_equal(template.variances, [0, 0])
+    finally:
+        reader.close()
