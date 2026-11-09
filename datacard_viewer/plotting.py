@@ -2,13 +2,14 @@
 
 import html
 import textwrap
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from .core import Comparison, ratios
+from .core import ratios
 
 
 def _base_figure(log_y=False):
@@ -33,6 +34,27 @@ def _base_figure(log_y=False):
     return fig
 
 
+def _effect_label(comparison):
+    types = comparison.effect_types
+    if types is None:
+        return ""
+    if not types:
+        return "No local effect"
+    if len(types) > 1:
+        return "Shape + log-normal"
+    return "Shape" if "shape" in types else "Log-normal (lnN)"
+
+
+def _ratio_label(fig, x, text):
+    if text:
+        fig.add_annotation(
+            x=x, xref="x2", y=1, yref="y2 domain",
+            text=text, showarrow=False, yanchor="bottom", yshift=2, align="left",
+            font=dict(size=11, color="#364152"),
+            bgcolor="rgba(255,255,255,0.9)",
+        )
+
+
 def _draw_comparison(
     fig,
     c,
@@ -46,6 +68,7 @@ def _draw_comparison(
     # Explicit pairs of edges retain true bin widths and gaps at masked bins.
     x = np.column_stack((edges[:-1], edges[1:])).ravel() + offset
     custom = np.repeat(np.column_stack((edges[:-1], edges[1:])), 2, axis=0)
+    effect = _effect_label(c)
 
     def trace(values, name, color, row, band=None):
         y = np.repeat(values, 2)
@@ -94,6 +117,7 @@ def _draw_comparison(
                 customdata=custom,
                 hovertemplate=(html.escape(channel) + "<br>" if channel else "")
                 + name
+                + (f"<br>{effect}" if row == 2 and name in ("Up", "Down") and effect else "")
                 + "<br>bin=[%{customdata[0]:g}, %{customdata[1]:g}]<br>value=%{y:.6g}<extra></extra>",
             ),
             row=row,
@@ -121,6 +145,7 @@ def _draw_comparison(
     )
     for h, name, color in zip([c.up, c.down], ["Up", "Down"], colors[1:]):
         trace(ratios(h.values, n), name, color, 2)
+    _ratio_label(fig, (edges[0] + edges[-1]) / 2 + offset, effect)
     if np.any(n == 0):
         centers = (edges[:-1] + edges[1:]) / 2
         fig.add_trace(
@@ -183,12 +208,10 @@ def display_channels(comparisons, remove_normalization=False):
     return [
         (
             name,
-            Comparison(
-                c.nominal,
-                c.up.scaled(nominal / up),
-                c.down.scaled(nominal / down),
-                c.warnings,
-                c.coefficients,
+            replace(
+                c,
+                up=c.up.scaled(nominal / up),
+                down=c.down.scaled(nominal / down),
             ),
         )
         for name, c in comparisons
@@ -291,18 +314,6 @@ def compare_figure(before, after, remove_normalization=False, log_y=False):
     if not matches:
         return None, False
 
-    def normalize_group(items):
-        if not remove_normalization:
-            return items
-        totals = [sum(getattr(c, field).integral for _, c in items) for field in ("nominal", "up", "down")]
-        nominal, up, down = totals
-        if min(totals) <= 0:
-            return items
-        return [
-            (name, Comparison(c.nominal, c.up.scaled(nominal / up), c.down.scaled(nominal / down), c.warnings, c.coefficients))
-            for name, c in items
-        ]
-
     if remove_normalization:
         all_totals = [
             sum(getattr(c, field).integral for _, c in items)
@@ -311,7 +322,8 @@ def compare_figure(before, after, remove_normalization=False, log_y=False):
         ]
         if min(all_totals) <= 0:
             remove_normalization = False
-    before, after = normalize_group(before), normalize_group(after)
+    before = display_channels(before, remove_normalization)
+    after = display_channels(after, remove_normalization)
     fig = _base_figure(log_y)
     direction = {"Nominal": "rgb(55,65,80)", "Up": "rgb(30,125,185)", "Down": "rgb(220,100,40)"}
     gap = 0.1 * max(c.nominal.edges[-1] - c.nominal.edges[0] for _, c in before)
@@ -322,7 +334,12 @@ def compare_figure(before, after, remove_normalization=False, log_y=False):
         edges = b.nominal.edges
         x = np.column_stack((edges[:-1], edges[1:])).ravel() + offset
         custom = np.repeat(np.column_stack((edges[:-1], edges[1:])), 2, axis=0)
+        effect_labels = []
         for side, comparison, dash in (("Before", b, "dash"), ("After", a, "solid")):
+            effect = _effect_label(comparison)
+            if effect:
+                effect_labels.append(f"{side} · <b>{effect}</b>")
+            effect_hover = f"<br>{effect}" if effect else ""
             for name, template in zip(("Nominal", "Up", "Down"), (comparison.nominal, comparison.up, comparison.down)):
                 label = f"{side} {name}"
                 fig.add_trace(go.Scatter(x=x, y=np.repeat(template.values, 2), mode="lines", name=label, legendgroup=label, showlegend=channel_index == 0, connectgaps=False, customdata=custom, line=dict(color=direction[name], dash=dash, width=2), hovertemplate=f"{html.escape(channel)}<br>{label}<br>bin=[%{{customdata[0]:g}}, %{{customdata[1]:g}}]<br>value=%{{y:.6g}}<extra></extra>"), row=1, col=1)
@@ -332,8 +349,10 @@ def compare_figure(before, after, remove_normalization=False, log_y=False):
                 if finite.size:
                     ratio_low, ratio_high = min(ratio_low, float(finite.min())), max(ratio_high, float(finite.max()))
                 label = f"{side} {name} / nominal"
-                fig.add_trace(go.Scatter(x=x, y=np.repeat(values, 2), mode="lines", name=label, legendgroup=f"{side} {name}", showlegend=channel_index == 0, connectgaps=False, customdata=custom, line=dict(color=direction[name], dash=dash, width=2), hovertemplate=f"{html.escape(channel)}<br>{label}<br>bin=[%{{customdata[0]:g}}, %{{customdata[1]:g}}]<br>ratio=%{{y:.6g}}<extra></extra>"), row=2, col=1)
-        fig.add_annotation(x=(edges[0] + edges[-1]) / 2 + offset, y=1.02, xref="x", yref="paper", text=html.escape(channel), showarrow=False, yanchor="bottom", font=dict(size=11))
+                fig.add_trace(go.Scatter(x=x, y=np.repeat(values, 2), mode="lines", name=label, legendgroup=f"{side} {name}", showlegend=channel_index == 0, connectgaps=False, customdata=custom, line=dict(color=direction[name], dash=dash, width=2), hovertemplate=f"{html.escape(channel)}<br>{label}{effect_hover}<br>bin=[%{{customdata[0]:g}}, %{{customdata[1]:g}}]<br>ratio=%{{y:.6g}}<extra></extra>"), row=2, col=1)
+        center = (edges[0] + edges[-1]) / 2 + offset
+        fig.add_annotation(x=center, y=1.02, xref="x", yref="paper", text=html.escape(channel), showarrow=False, yanchor="bottom", font=dict(size=11))
+        _ratio_label(fig, center, "<br>".join(effect_labels))
         cursor += edges[-1] - edges[0] + gap
     padding = 0.1 * (ratio_high - ratio_low) if ratio_high > ratio_low else 0.01
     fig.update_yaxes(range=[ratio_low - padding, ratio_high + padding], autorange=False, row=2, col=1)

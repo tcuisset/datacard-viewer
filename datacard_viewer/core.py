@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from optparse import OptionParser
 from pathlib import Path
 
@@ -348,16 +348,16 @@ class Comparison:
     down: Template
     warnings: tuple = ()
     coefficients: dict = field(default_factory=dict)
+    # Resolved families of active effects. None means provenance was not supplied.
+    effect_types: frozenset[str] | None = None
 
     def normalized(self):
         if min(self.nominal.integral, self.up.integral, self.down.integral) <= 0:
             raise ValueError("Normalization removal requires positive integrals")
-        return Comparison(
-            self.nominal,
-            self.up.scaled(self.nominal.integral / self.up.integral),
-            self.down.scaled(self.nominal.integral / self.down.integral),
-            self.warnings,
-            self.coefficients,
+        return replace(
+            self,
+            up=self.up.scaled(self.nominal.integral / self.up.integral),
+            down=self.down.scaled(self.nominal.integral / self.down.integral),
         )
 
 
@@ -375,9 +375,10 @@ def compare(reader, channel, processes, nuisance):
             zero,
             zero,
             ("No selected processes in this channel: zero yield.",),
-            {},
+            effect_types=frozenset(),
         )
     nominal, up, down, warnings, coefficients = [], [], [], [], {}
+    effect_types = set()
     for process in processes:
         n = reader.read(channel, process)
         nominal.append(n)
@@ -398,6 +399,7 @@ def compare(reader, channel, processes, nuisance):
             except KeyError as exc:
                 variations.append(None)
                 missing.append(str(exc))
+        effect_type = "shape"
         if len(missing) == 2 and reader.card.nuisances[nuisance] == "shape?":
             if isinstance(coefficient, list):
                 low, high = coefficient
@@ -406,6 +408,7 @@ def compare(reader, channel, processes, nuisance):
             if min(low, high) <= 0:
                 raise ValueError("Invalid shape? log-normal factor")
             variations = [n.scaled(high), n.scaled(low)]
+            effect_type = "lnN"
             warnings.append(f"{process}: shape? log-normal fallback")
         elif missing:
             raise ValueError(
@@ -418,6 +421,7 @@ def compare(reader, channel, processes, nuisance):
             )
         # Validate against the nominal even when comparing just one process.
         add([n, *variations])
+        effect_types.add(effect_type)
         up.append(variations[0])
         down.append(variations[1])
     return Comparison(
@@ -426,6 +430,7 @@ def compare(reader, channel, processes, nuisance):
         add(down),
         tuple(warnings),
         coefficients,
+        frozenset(effect_types),
     )
 
 
@@ -474,8 +479,13 @@ def compare_response(reader, channel, processes, nuisance, side="card"):
     if not processes:
         reference = reader.read(channel, reader.card.channels[channel][0])
         zero = Template(reference.edges.copy(), np.zeros_like(reference.values), np.zeros_like(reference.variances))
-        return Comparison(zero, zero, zero, ("No selected processes in this channel: zero yield.",), {})
+        return Comparison(
+            zero, zero, zero,
+            ("No selected processes in this channel: zero yield.",),
+            effect_types=frozenset(),
+        )
     nominal, up, down, warnings, coefficients = [], [], [], [], {}
+    effect_types = set()
     for process in processes:
         n = reader.read(channel, process)
         kind, coefficient = _effective_declaration(reader.card, nuisance, channel, process)
@@ -492,6 +502,7 @@ def compare_response(reader, channel, processes, nuisance, side="card"):
                 high, low = coefficient, 1 / coefficient
             up.append(n.scaled(high))
             down.append(n.scaled(low))
+            effect_types.add("lnN")
             continue
         if not kind.startswith("shape"):
             up.append(n)
@@ -505,12 +516,14 @@ def compare_response(reader, channel, processes, nuisance, side="card"):
             except KeyError as exc:
                 variations.append(None)
                 missing.append(str(exc))
+        effect_type = "shape"
         if len(missing) == 2 and kind == "shape?":
             if isinstance(coefficient, list):
                 low, high = coefficient
             else:
                 high, low = coefficient, 1 / coefficient
             variations = [n.scaled(high), n.scaled(low)]
+            effect_type = "lnN"
             warnings.append(f"{side}: {channel}/{process}: shape? log-normal fallback")
         elif missing:
             raise ValueError(
@@ -520,6 +533,7 @@ def compare_response(reader, channel, processes, nuisance, side="card"):
         elif coefficient != 1:
             warnings.append(f"{side}: {channel}/{process}: shape coefficient {coefficient}; stored endpoints are shown")
         add([n, *variations])
+        effect_types.add(effect_type)
         up.append(variations[0])
         down.append(variations[1])
     return Comparison(
@@ -528,6 +542,7 @@ def compare_response(reader, channel, processes, nuisance, side="card"):
         add(down),
         tuple(warnings),
         coefficients,
+        frozenset(effect_types),
     )
 
 

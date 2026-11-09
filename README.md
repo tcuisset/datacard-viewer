@@ -42,10 +42,18 @@ uv run --locked --no-dev streamlit run app.py -- \
 ```
 
 The command also works with historical `optimized.txt` cards or output from another
-optimizer. Choose **Compare** after opening both cards. **Card edits** lists nuisance
-text changes and `shape?` entries for ROOT inspection; **All effects** lets you inspect
-any exact-name nuisance in both cards. The shortlist is based on datacard text, so a
-retained shape nuisance can still have different ROOT templates.
+optimizer. Choose **Compare** after opening both cards. **Card edits** offers nuisance
+declaration changes and `shape?` effects for ROOT inspection. **All effects** also
+includes retained declarations. Choose a nuisance to load its templates. The
+**Datacard differences** panel below the results lists added and removed channels,
+process changes in the selected channels, and the card-wide nuisance shortlist.
+Retained shape nuisances can still have different ROOT templates.
+
+The ratio panel labels each channel by the effects used to build its curves,
+with separate Before and After labels when the cards are overlaid. A `shape?`
+effect that uses its log-normal fallback is labeled log-normal. Sums with both
+effect types are labeled mixed. These labels describe the local effects before
+plot normalization, and the ratio tooltips show the same information.
 
 ### Remote machines
 
@@ -58,23 +66,27 @@ ssh -N -L 8501:127.0.0.1:8501 user@remote-host
 Open http://localhost:8501 locally. The app binds to loopback by default. All plot
 assets are supplied locally; normal use needs no internet after dependency installation.
 
+## Select shapes
+
+Both modes use the same controls. Choose one or more **Channels** in left-to-right
+plot order. Remove and re-add a channel to move it to the end. In Compare, the
+channel options are the exact names shared by both cards.
+
+To select channels in bulk, open **Select channels by name**, enter part of a
+channel name, and click **Select matching channels**. The button replaces the
+selection with all case-insensitive substring matches in datacard order. You can
+edit the result in the multiselect.
+
+Choose one or more **Processes** to sum. **Backgrounds**, **Signals**, and
+**All** fill the selector, which you can then edit. Backgrounds have
+positive process IDs, and signals have zero or negative IDs. In Compare, a
+process name qualifies for a preset if either card classifies it that way.
+Processes absent from a selected channel or card contribute zero yield there.
+
+Choose a **Nuisance** directly or step through the list with the arrows next to
+the picker. **Filter nuisances** narrows the list by datacard group or name.
+
 ## Inspect shapes
-
-Select a channel, one process / all backgrounds / all processes, and a shape nuisance.
-Backgrounds have positive process IDs; signals have zero or negative IDs. Search
-nuisances by name or use their datacard groups and previous/next controls.
-
-### Multiple channels
-
-Enable **Show multiple channels**, then choose channels in the multiselect. Their
-selection order is the left-to-right plot order; remove and re-add a channel to
-move it. Turning the toggle off restores the last single-channel selection.
-
-For bulk selection, enter part of a channel name in **Filter channel names** and
-click **Select matching channels**. Matching is case-insensitive, just like nuisance
-filtering. The button replaces the selection with all matches in datacard order;
-typing alone leaves the selection unchanged. Empty or unmatched filters disable
-the button. You can still adjust the result using the multiselect.
 
 Each channel occupies a separate segment in both panels, with its own physical
 observable tick labels, channel header, and boundary. Segment widths are proportional
@@ -82,14 +94,12 @@ to the observable ranges; bin widths are preserved within each segment. Tooltips
 identify the channel and original bin interval. Curves and uncertainty bands stop
 at channel boundaries.
 
-The process grouping and nuisance are shared. Individual-process choices include processes
-present in any selected channel. Absent processes contribute zero yield using the
-local channel binning, with a notice. Nuisances can affect any selected channel;
-unaffected channels keep their nominal shapes. A missing/unreadable template stops
-the plot with its channel identified, rather than silently changing its contents.
+The nuisance list includes shape effects declared in any selected channel.
+Unaffected channels keep their nominal shapes. A missing or unreadable template
+stops the plot and identifies the channel.
 
-In this mode **Remove normalization effect** applies one common Up scale and one
-common Down scale using the totals across all selected channels. Relative yield
+Under **Plot options**, **Remove normalization effect** applies one common Up
+scale and one common Down scale using the totals across all selected channels. Relative yield
 changes between channels remain visible. Integral metrics show raw totals, and the
 table shows each channel's raw yields and diagnostics. Diagnostic shape residuals
 continue to remove normalization independently within each channel and are distinct
@@ -100,9 +110,9 @@ display coordinates. HTML exports preserve the segmented figure. **Scan selected
 channels** scans all selected channels; whole-card scans are unchanged.
 
 The upper panel overlays nominal, Up, and Down bin yields using physical bin edges.
-The lower panel shows variation/nominal. Its y-axis fits the finite Up/nominal and Down/nominal curves, including the reference at one, with 10% padding. Statistical bands do not affect this range and may extend beyond the visible panel. **Remove normalization effect** rescales
-variations to the nominal integral in single-channel mode. The displayed integral metrics always describe
-the original templates. PNG export is in Plotly's toolbar; the buttons export plotted
+The lower panel shows variation/nominal. Its y-axis fits the finite Up/nominal and
+Down/nominal curves, including the reference at one, with 10% padding. Statistical
+bands can extend beyond this range. PNG export is in Plotly's toolbar. The buttons export plotted
 bin contents and variances as CSV, or an interactive standalone HTML plot.
 
 Nominal statistical bands use the histogram's stored errors (`Sumw2`), which can

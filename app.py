@@ -21,11 +21,9 @@ from datacard_viewer.core import (
     summarize,
 )
 from datacard_viewer.plotting import (
-    bins_frame,
     channel_figure,
     channels_frame,
     compare_figure,
-    figure,
 )
 from datacard_viewer.reporting import scan_exports
 
@@ -83,8 +81,8 @@ def scan_panel(card, mappings, mass, keywords, threshold, channels):
         for k in ("scan", "channel_scan")
     )
     if a.button(
-        "Scan selected channels" if len(channels) > 1 else "Scan selected channel",
-        disabled=active,
+        "Scan selected channel" if len(channels) == 1 else "Scan selected channels",
+        disabled=active or not channels,
     ):
         st.session_state["channel_scan"] = Scan(
             card, mappings, mass, keywords, channels
@@ -163,336 +161,473 @@ def completed_exports(token, threshold, stale, _card, _rows, _channels):
     return scan_exports(_card, _rows, threshold, _channels, stale)
 
 
-@st.fragment
-def inspector(card, reader, threshold, mappings, mass, keywords):
-    if fingerprint(card.path) != card.revision:
-        st.rerun()
-    left, right = st.columns([1, 3])
-    with left:
-        multiple = st.toggle("Show multiple channels", value=False)
-        last = st.session_state.get("last_channel", next(iter(card.channels)))
-        if last not in card.channels:
-            last = next(iter(card.channels))
-        if multiple:
-            if "multi_channels" not in st.session_state:
-                st.session_state["multi_channels"] = [last]
-            st.session_state["multi_channels"] = [
-                ch for ch in st.session_state["multi_channels"] if ch in card.channels
-            ]
-            pattern = st.text_input(
-                "Filter channel names",
-                key="channel_filter",
-                help="Case-insensitive substring matching, like nuisance filtering. "
-                "Selecting matches replaces the channel selection in datacard order.",
-            ).strip()
-            matches = [
-                ch
-                for ch in card.channels
-                if pattern and pattern.casefold() in ch.casefold()
-            ]
-            if pattern:
-                st.caption(f"{len(matches)} matching channel(s)")
-            if st.button("Select matching channels", disabled=not matches):
-                st.session_state["multi_channels"] = matches
-            channels = st.multiselect(
-                "Channels (left-to-right order)",
-                list(card.channels),
-                key="multi_channels",
-            )
-            if not channels:
-                st.info("Select at least one channel.")
-                return
-        else:
-            if st.session_state.get("single_channel") not in card.channels:
-                st.session_state["single_channel"] = last
-            channel = st.selectbox("Channel", list(card.channels), key="single_channel")
-            st.session_state["last_channel"] = channel
-            channels = [channel]
-        selection = st.radio(
-            "Processes", ["One process", "All backgrounds", "All processes"]
+def keep_valid_selection(key, options):
+    previous = st.session_state.get(key)
+    valid = set(options)
+    kept = [value for value in previous or () if value in valid]
+    if previous is None or (previous and not kept):
+        kept = options[:1]
+    if previous != kept:
+        st.session_state[key] = kept
+
+
+def select_channels(options):
+    keep_valid_selection("channels", options)
+    channels = st.multiselect(
+        "Channels",
+        options,
+        key="channels",
+        help="Channels appear in the plot in selection order.",
+        placeholder="Choose channels",
+    )
+    with st.expander("Select channels by name"):
+        query = (
+            st.text_input("Filter channel names", key="channel_filter")
+            .strip()
+            .casefold()
         )
-        available = list(dict.fromkeys(p for ch in channels for p in card.channels[ch]))
-        process = st.selectbox(
-            "Process", available, disabled=selection != "One process"
+        matches = [ch for ch in options if query and query in ch.casefold()]
+        if query:
+            st.caption(f"{len(matches)} matching channel(s)")
+        st.button(
+            "Select matching channels",
+            disabled=not matches,
+            help="Replace the current selection with case-insensitive substring matches in datacard order.",
+            on_click=st.session_state.__setitem__,
+            args=("channels", matches),
         )
-        if multiple:
-            st.caption(
-                "Processes absent from a channel contribute zero yield in that channel."
+    return channels
+
+
+def select_processes(cards, channels):
+    available = list(
+        dict.fromkeys(p for ch in channels for card in cards for p in card.channels[ch])
+    )
+    keep_valid_selection("processes", available)
+    processes = st.multiselect(
+        "Processes",
+        available,
+        key="processes",
+        help="Sum the selected processes. A process absent from a channel or card contributes zero yield there.",
+        placeholder="Choose processes",
+    )
+    with st.container(horizontal=True, gap="xsmall"):
+        for label, signal, help_text in (
+            ("Backgrounds", False, "Select all backgrounds"),
+            ("Signals", True, "Select all signals"),
+            ("All", None, "Select all processes"),
+        ):
+            preset = [
+                p
+                for p in available
+                if signal is None
+                or any(card.parsed.isSignal.get(p) is signal for card in cards)
+            ]
+            st.button(
+                label,
+                help=help_text,
+                disabled=not preset,
+                on_click=st.session_state.__setitem__,
+                args=("processes", preset),
             )
-        processes = {ch: card.processes(ch, selection, process) for ch in channels}
-        group = st.selectbox("Nuisance group", ["All groups", *card.parsed.groups])
-        search = st.text_input("Filter nuisance name")
-        names = [
-            n
-            for n in card.nuisances
-            if (group == "All groups" or n in card.parsed.groups[group])
-            and search.lower() in n.lower()
-            and any(
-                (n, ch, p) in card.coefficients
-                for ch in channels
-                for p in (card.channels[ch] if multiple else processes[ch])
-            )
-        ]
-        if not names:
-            st.info("No matching shape nuisances for this selection.")
-            scan_panel(card, mappings, mass, keywords, threshold, channels)
-            return
-        if st.session_state.get("nuisance") not in names:
-            st.session_state["nuisance"] = names[0]
-        prev, nxt = st.columns(2)
-        idx = names.index(st.session_state["nuisance"])
-        if prev.button("← Previous"):
-            st.session_state["nuisance"] = names[(idx - 1) % len(names)]
-        if nxt.button("Next →"):
-            st.session_state["nuisance"] = names[(idx + 1) % len(names)]
-        nuisance = st.selectbox("Shape nuisance", names, key="nuisance")
-        normalize = st.checkbox("Remove normalization effect")
-        bands = st.checkbox("Show Up/Down statistical bands")
-        log_y = st.checkbox("Logarithmic y-axis")
-        st.caption(f"{len(channels)} channel(s) · {len(names)} matching nuisances")
-        if multiple and normalize:
-            st.caption(
-                "One common normalization across selected channels; relative channel yield changes remain visible."
-            )
-    with right:
-        st.subheader(nuisance)
-        st.caption(f"{' · '.join(channels)} · {selection} · {card.nuisances[nuisance]}")
-        try:
-            comparisons = []
-            for ch in channels:
-                try:
-                    comparisons.append(
-                        (ch, compare(reader, ch, processes[ch], nuisance))
-                    )
-                except Exception as exc:
-                    raise ValueError(f"Channel {ch}: {exc}") from exc
-            warnings = list(
-                dict.fromkeys(
-                    f"{ch}: {warning}"
-                    for ch, c in comparisons
-                    for warning in (
-                        *c.warnings,
-                        *c.nominal.warnings,
-                        *c.up.warnings,
-                        *c.down.warnings,
-                    )
-                )
-            )
-            flow_notices = [w for w in warnings if "under/overflow" in w]
-            for warning in warnings:
-                if (
-                    warning not in flow_notices
-                    and "shape? log-normal fallback" not in warning
-                ):
-                    st.warning(warning)
-            if flow_notices:
-                with st.expander(
-                    f"Excluded under/overflow reports ({len(flow_notices)})"
-                ):
-                    for notice in flow_notices:
-                        st.write(notice)
-            if log_y and any(
-                (h.values <= 0).any()
-                for _, c in comparisons
-                for h in (c.nominal, c.up, c.down)
-            ):
-                st.warning(
-                    "Log y disabled: selected templates contain nonpositive bins."
-                )
-                log_y = False
-            n, u, d = (
-                sum(getattr(c, name).integral for _, c in comparisons)
-                for name in ("nominal", "up", "down")
-            )
-            cols = st.columns(3)
-            cols[0].metric("Nominal integral", f"{n:,.6g}")
-            cols[1].metric(
-                "Up integral", f"{u:,.6g}", f"{(u / n - 1) * 100:+.3g}%" if n else None
-            )
-            cols[2].metric(
-                "Down integral",
-                f"{d:,.6g}",
-                f"{(d / n - 1) * 100:+.3g}%" if n else None,
-            )
-            if multiple:
-                fig = channel_figure(comparisons, normalize, bands, log_y)
-                frame = channels_frame(comparisons, normalize)
-            else:
-                c = comparisons[0][1]
-                fig = figure(c, normalize, bands, log_y)
-                frame = bins_frame(c, normalize).assign(channel=channels[0])
-            st.plotly_chart(fig, width="stretch", key="shape_plot")
-            st.caption(
-                "Bands: stored template statistical errors. Ratio band: nominal fractional error reference, "
-                "not a propagated ratio uncertainty. Process sums assume independent template errors."
-                + (
-                    " Normalized bands are scaled stored errors, without normalization covariance."
-                    if normalize
-                    else ""
-                )
-            )
-            rows = [
-                dict(
-                    channel=ch,
-                    nominal=c.nominal.integral,
-                    up=c.up.integral,
-                    down=c.down.integral,
-                    **diagnose(c),
-                )
+    return processes
+
+
+def select_nuisance(cards, candidates, allow_empty):
+    groups = list(dict.fromkeys(g for card in cards for g in card.parsed.groups))
+    with st.expander("Filter nuisances"):
+        if st.session_state.get("nuisance_group") not in (None, *groups):
+            st.session_state["nuisance_group"] = None
+        group = st.selectbox(
+            "Nuisance group",
+            groups,
+            index=None,
+            key="nuisance_group",
+            placeholder="All groups",
+        )
+        query = st.text_input("Filter nuisance name").strip().casefold()
+    members = {n for card in cards for n in card.parsed.groups.get(group, ())}
+    names = [
+        n
+        for n in candidates
+        if query in n.casefold() and (group is None or n in members)
+    ]
+
+    key = "compare_nuisance" if allow_empty else "nuisance"
+    current = st.session_state.get(key)
+    if current not in names:
+        current = None if allow_empty or not names else names[0]
+        st.session_state[key] = current
+    previous = following = None
+    if names:
+        idx = names.index(current) if current is not None else -1
+        previous = names[(idx - 1) % len(names)] if idx >= 0 else names[-1]
+        following = names[(idx + 1) % len(names)]
+    with st.container(horizontal=True, gap="xsmall", vertical_alignment="bottom"):
+        st.button(
+            "←",
+            help="Previous nuisance",
+            disabled=previous == current,
+            on_click=st.session_state.__setitem__,
+            args=(key, previous),
+        )
+        nuisance = st.selectbox("Nuisance", names, index=None, key=key)
+        st.button(
+            "→",
+            help="Next nuisance",
+            disabled=following == current,
+            on_click=st.session_state.__setitem__,
+            args=(key, following),
+        )
+    st.caption(f"{len(names)} matching nuisance(s)")
+    return nuisance, len(names)
+
+
+def processes_by_channel(card, channels, selected):
+    return {ch: [p for p in card.channels[ch] if p in selected] for ch in channels}
+
+
+def inspect_shapes(card, reader, channels, selected, nuisance, normalize, log_y, bands):
+    processes = processes_by_channel(card, channels, selected)
+    try:
+        comparisons = []
+        for ch in channels:
+            try:
+                comparisons.append((ch, compare(reader, ch, processes[ch], nuisance)))
+            except Exception as exc:
+                raise ValueError(f"Channel {ch}: {exc}") from exc
+        warnings = list(
+            dict.fromkeys(
+                f"{ch}: {warning}"
                 for ch, c in comparisons
-            ]
-            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-            st.caption(
-                "Diagnostics remove normalization separately within each channel; normalization-only screening uses individual processes."
-                + (
-                    " The plotted normalization instead uses totals across the selected channels."
-                    if multiple and normalize
-                    else ""
+                for warning in (
+                    *c.warnings,
+                    *c.nominal.warnings,
+                    *c.up.warnings,
+                    *c.down.warnings,
                 )
             )
-            frame = frame.assign(nuisance=nuisance, normalized=normalize)
-            frame["processes"] = frame.channel.map(lambda ch: " + ".join(processes[ch]))
-            a, b = st.columns(2)
-            a.download_button(
-                "Download plotted bins (CSV)",
-                frame.to_csv(index=False),
-                "shape_bins.csv",
-                "text/csv",
+        )
+        flow_notices = [w for w in warnings if "under/overflow" in w]
+        for warning in warnings:
+            if (
+                warning not in flow_notices
+                and "shape? log-normal fallback" not in warning
+            ):
+                st.warning(warning)
+        if flow_notices:
+            with st.expander(f"Excluded under/overflow reports ({len(flow_notices)})"):
+                for notice in flow_notices:
+                    st.write(notice)
+        if log_y and any(
+            (h.values <= 0).any()
+            for _, c in comparisons
+            for h in (c.nominal, c.up, c.down)
+        ):
+            st.warning("Log y disabled: selected templates contain nonpositive bins.")
+            log_y = False
+        n, u, d = (
+            sum(getattr(c, name).integral for _, c in comparisons)
+            for name in ("nominal", "up", "down")
+        )
+        cols = st.columns(3)
+        cols[0].metric("Nominal integral", f"{n:,.6g}")
+        cols[1].metric(
+            "Up integral", f"{u:,.6g}", f"{(u / n - 1) * 100:+.3g}%" if n else None
+        )
+        cols[2].metric(
+            "Down integral",
+            f"{d:,.6g}",
+            f"{(d / n - 1) * 100:+.3g}%" if n else None,
+        )
+        fig = channel_figure(comparisons, normalize, bands, log_y)
+        frame = channels_frame(comparisons, normalize)
+        st.plotly_chart(fig, width="stretch", key="shape_plot")
+        st.caption(
+            "Bands: stored template statistical errors. Ratio band: nominal fractional error reference, "
+            "not a propagated ratio uncertainty. Process sums assume independent template errors."
+            + (
+                " Normalized bands are scaled stored errors, without normalization covariance."
+                if normalize
+                else ""
             )
-            b.download_button(
-                "Download interactive plot (HTML)",
-                fig.to_html(include_plotlyjs=True).replace(
-                    "<body>",
-                    f"<body><h2>{html.escape(nuisance)}</h2><p>{html.escape(' · '.join(channels))} · {html.escape(selection)} · normalization removed: {normalize}</p>",
-                ),
-                "shape_plot.html",
-                "text/html",
+        )
+        rows = [
+            dict(
+                channel=ch,
+                nominal=c.nominal.integral,
+                up=c.up.integral,
+                down=c.down.integral,
+                **diagnose(c),
             )
-            with st.expander("Template provenance and bin values"):
-                st.json(
-                    {
-                        ch: dict(
-                            coefficients=c.coefficients,
-                            nominal=c.nominal.sources,
-                            up=c.up.sources,
-                            down=c.down.sources,
-                        )
-                        for ch, c in comparisons
-                    }
-                )
-                st.dataframe(frame, hide_index=True)
-        except Exception as exc:
-            st.error(str(exc))
-    scan_panel(card, mappings, mass, keywords, threshold, channels)
-
-
-def comparison_inspector(before, after, before_reader, after_reader):
-    st.subheader("Before-and-after comparison")
-    st.caption("Shortlist compares datacard text. Retained shape templates may still differ in ROOT.")
-    common_channels = [ch for ch in before.channels if ch in after.channels]
-    added_channels = [ch for ch in after.channels if ch not in before.channels]
-    removed_channels = [ch for ch in before.channels if ch not in after.channels]
-    if added_channels or removed_channels:
-        st.info(f"Channels added: {', '.join(added_channels) or 'none'} · removed: {', '.join(removed_channels) or 'none'}")
-    if not common_channels:
-        st.warning("The cards have no exactly matching channels to plot.")
-        return
-    left, right = st.columns([1, 3])
-    with left:
-        channel_filter = st.text_input("Filter channel names", key="compare_channel_filter").strip()
-        choices = [ch for ch in common_channels if channel_filter.casefold() in ch.casefold()]
-        channels = st.multiselect("Channels (left-to-right order)", choices, default=choices[:1], key="compare_channels")
-        selection = st.radio("Processes", ["One process", "All backgrounds", "All processes"], key="compare_process_selection")
-        all_processes = list(dict.fromkeys(p for ch in channels for card in (before, after) for p in card.channels.get(ch, ())))
-        process = st.selectbox("Process", all_processes, key="compare_process", disabled=selection != "One process") if all_processes else None
-        group = st.selectbox("Nuisance group", ["All groups", *dict.fromkeys((*before.parsed.groups, *after.parsed.groups))], key="compare_group")
-        view = st.radio("Nuisance view", ["Card edits", "All effects"], key="compare_view")
-        query = st.text_input("Filter nuisance name", key="compare_nuisance_filter").casefold()
-        shortlist = comparison_shortlist(before, after)
-        if view == "Card edits":
-            candidate_names = [r["nuisance"] for r in shortlist]
-        else:
-            candidate_names = list(dict.fromkeys((*before.declarations, *after.declarations)))
-        group_members = set()
-        if group != "All groups":
-            group_members = set(before.parsed.groups.get(group, ())) | set(after.parsed.groups.get(group, ()))
-        names = [n for n in candidate_names if query in n.casefold() and (group == "All groups" or n in group_members)]
-        st.caption(f"{len(names)} matching nuisance(s); shortlist opened without reading ROOT templates.")
-        if view == "Card edits":
-            shortlist_rows = {row["nuisance"]: row for row in shortlist}
-        else:
-            shortlist_rows = {
-                row["nuisance"]: row
-                for row in shortlist
-            }
-        summaries = []
-        for name in names:
-            row = shortlist_rows.get(name)
-            if row is None:
-                b_types = {kind for kind, _ in before.declarations.get(name, {}).values()}
-                a_types = {kind for kind, _ in after.declarations.get(name, {}).values()}
-                row = {
-                    "nuisance": name,
-                    "changed pairs": 0,
-                    "Before types": ", ".join(sorted(b_types)) or "—",
-                    "After types": ", ".join(sorted(a_types)) or "—",
-                    "ROOT check": False,
+            for ch, c in comparisons
+        ]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        st.caption(
+            "Diagnostics remove normalization separately within each channel; normalization-only screening uses individual processes."
+            + (
+                " The plotted normalization instead uses totals across the selected channels."
+                if normalize and len(channels) > 1
+                else ""
+            )
+        )
+        frame = frame.assign(nuisance=nuisance, normalized=normalize)
+        frame["processes"] = frame.channel.map(lambda ch: " + ".join(processes[ch]))
+        a, b = st.columns(2)
+        a.download_button(
+            "Download plotted bins (CSV)",
+            frame.to_csv(index=False),
+            "shape_bins.csv",
+            "text/csv",
+        )
+        b.download_button(
+            "Download interactive plot (HTML)",
+            fig.to_html(include_plotlyjs=True).replace(
+                "<body>",
+                f"<body><h2>{html.escape(nuisance)}</h2><p>{html.escape(' · '.join(channels))} · {html.escape(' + '.join(selected))} · normalization removed: {normalize}</p>",
+            ),
+            "shape_plot.html",
+            "text/html",
+        )
+        with st.expander("Template provenance and bin values"):
+            st.json(
+                {
+                    ch: dict(
+                        coefficients=c.coefficients,
+                        nominal=c.nominal.sources,
+                        up=c.up.sources,
+                        down=c.down.sources,
+                    )
+                    for ch, c in comparisons
                 }
-            summaries.append(row)
-        st.dataframe(pd.DataFrame(summaries), hide_index=True, width="stretch", height=220)
-        nuisance = st.selectbox("Select a nuisance to load its templates", ["Select a nuisance", *names], key="compare_nuisance")
-        if channels:
-            added = [{"channel": ch, "process": p} for ch in channels for p in after.channels[ch] if p not in before.channels[ch]]
-            removed = [{"channel": ch, "process": p} for ch in channels for p in before.channels[ch] if p not in after.channels[ch]]
-            with st.expander(f"Process changes · {len(added)} added · {len(removed)} removed"):
-                st.markdown("**Added processes**")
-                st.dataframe(pd.DataFrame(added, columns=["channel", "process"]), hide_index=True)
-                st.markdown("**Removed processes**")
-                st.dataframe(pd.DataFrame(removed, columns=["channel", "process"]), hide_index=True)
-        normalize = st.checkbox("Remove normalization effect", key="compare_normalize")
-        log_y = st.checkbox("Logarithmic y-axis", key="compare_log_y")
-    with right:
-        if not channels or not names or nuisance == "Select a nuisance":
-            st.info("Choose a nuisance above to read only its selected templates.")
-            return
-        b_processes = {ch: before.processes(ch, selection, process) for ch in channels}
-        a_processes = {ch: after.processes(ch, selection, process) for ch in channels}
-        displayed = {ch: list(dict.fromkeys((*b_processes[ch], *a_processes[ch]))) for ch in channels}
+            )
+            st.dataframe(frame, hide_index=True)
+    except Exception as exc:
+        st.error(str(exc))
+
+
+def compare_shapes(
+    before_reader, after_reader, channels, selected, nuisance, normalize, log_y
+):
+    before, after = before_reader.card, after_reader.card
+    b_processes = processes_by_channel(before, channels, selected)
+    a_processes = processes_by_channel(after, channels, selected)
+    try:
+        before_comparisons, after_comparisons = [], []
+        for ch in channels:
+            before_comparisons.append(
+                (
+                    ch,
+                    compare_response(
+                        before_reader, ch, b_processes[ch], nuisance, "Before"
+                    ),
+                )
+            )
+            after_comparisons.append(
+                (
+                    ch,
+                    compare_response(
+                        after_reader, ch, a_processes[ch], nuisance, "After"
+                    ),
+                )
+            )
+        for items in (before_comparisons, after_comparisons):
+            for _, comparison in items:
+                for warning in comparison.warnings:
+                    if "shape? log-normal fallback" not in warning:
+                        st.warning(warning)
+        plot_totals = [
+            sum(getattr(c, field).integral for _, c in items)
+            for items in (before_comparisons, after_comparisons)
+            for field in ("nominal", "up", "down")
+        ]
+        if normalize and min(plot_totals) <= 0:
+            st.warning(
+                "Normalization removal requires positive nominal, Up, and Down totals in both cards. Showing raw plots."
+            )
+            normalize = False
+        fig, same_binning = compare_figure(
+            before_comparisons, after_comparisons, normalize, log_y
+        )
+        if same_binning:
+            st.plotly_chart(fig, width="stretch", key="compare_shape_plot")
+        else:
+            st.warning(
+                "Binning differs between cards; Before and After are shown separately with their own binning."
+            )
+            a, b = st.columns(2)
+            a.markdown("**Before**")
+            b.markdown("**After**")
+            a.plotly_chart(
+                channel_figure(before_comparisons, normalize, False, log_y),
+                width="stretch",
+                key="compare_before_plot",
+            )
+            b.plotly_chart(
+                channel_figure(after_comparisons, normalize, False, log_y),
+                width="stretch",
+                key="compare_after_plot",
+            )
+        summaries = []
+        for side, items in (
+            ("Before", before_comparisons),
+            ("After", after_comparisons),
+        ):
+            summaries.extend(
+                {
+                    "Card": side,
+                    "channel": ch,
+                    "nominal": c.nominal.integral,
+                    "up": c.up.integral,
+                    "down": c.down.integral,
+                }
+                for ch, c in items
+            )
+        st.dataframe(pd.DataFrame(summaries), hide_index=True, width="stretch")
+    except Exception as exc:
+        st.error(str(exc))
+
+    with st.expander("Selected nuisance effects"):
+        displayed = {
+            ch: list(dict.fromkeys((*b_processes[ch], *a_processes[ch])))
+            for ch in channels
+        }
         rows = effect_rows(before, after, nuisance, channels, displayed)
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-        st.caption("Effective factors are shown in parser order; asymmetric lnN values are down/up. A dropped effect plots at unity when nominal is nonzero.")
-        try:
-            before_comparisons, after_comparisons = [], []
-            for ch in channels:
-                before_comparisons.append((ch, compare_response(before_reader, ch, b_processes[ch], nuisance, "Before")))
-                after_comparisons.append((ch, compare_response(after_reader, ch, a_processes[ch], nuisance, "After")))
-            for side, items in (("Before", before_comparisons), ("After", after_comparisons)):
-                for ch, comparison in items:
-                    for warning in comparison.warnings:
-                        if "shape? log-normal fallback" not in warning:
-                            st.warning(warning)
-            plot_totals = [
-                sum(getattr(c, field).integral for _, c in items)
-                for items in (before_comparisons, after_comparisons)
-                for field in ("nominal", "up", "down")
+        st.caption(
+            "Asymmetric lnN factors are shown in down/up order. A dropped effect "
+            "plots at unity when nominal is nonzero."
+        )
+
+
+def comparison_differences(before, after, channels, shortlist):
+    with st.expander("Datacard differences"):
+        st.markdown("**Channels**")
+        added = [ch for ch in after.channels if ch not in before.channels]
+        removed = [ch for ch in before.channels if ch not in after.channels]
+        st.write("Added · " + (", ".join(added) or "None"))
+        st.write("Removed · " + (", ".join(removed) or "None"))
+        if channels:
+            st.markdown("**Process changes in selected channels**")
+            changes = [
+                {"channel": ch, "process": p, "change": change}
+                for ch in channels
+                for source, other, change in (
+                    (after, before, "Added"),
+                    (before, after, "Removed"),
+                )
+                for p in source.channels[ch]
+                if p not in other.channels[ch]
             ]
-            if normalize and min(plot_totals) <= 0:
-                st.warning("Normalization removal requires positive nominal, Up, and Down totals in both cards. Showing raw plots.")
-                normalize = False
-            fig, same_binning = compare_figure(before_comparisons, after_comparisons, normalize, log_y)
-            if same_binning:
-                st.plotly_chart(fig, width="stretch", key="compare_shape_plot")
+            if changes:
+                st.dataframe(pd.DataFrame(changes), hide_index=True, width="stretch")
             else:
-                st.warning("Binning differs between cards; Before and After are shown separately with their own binning.")
-                a, b = st.columns(2)
-                a.plotly_chart(channel_figure(before_comparisons, normalize, False, log_y), width="stretch", key="compare_before_plot")
-                b.plotly_chart(channel_figure(after_comparisons, normalize, False, log_y), width="stretch", key="compare_after_plot")
-            summaries = []
-            for side, items in (("Before", before_comparisons), ("After", after_comparisons)):
-                summaries.extend({"Card": side, "channel": ch, "nominal": c.nominal.integral, "up": c.up.integral, "down": c.down.integral} for ch, c in items)
-            st.dataframe(pd.DataFrame(summaries), hide_index=True, width="stretch")
-        except Exception as exc:
-            st.error(str(exc))
+                st.caption(
+                    "The selected channels have the same process names in both cards."
+                )
+        st.markdown("**Nuisance shortlist across both cards**")
+        st.caption(
+            "The shortlist uses datacard text and flags shape? effects for a ROOT check. "
+            "Retained shape templates may also differ in ROOT."
+        )
+        if shortlist:
+            st.dataframe(pd.DataFrame(shortlist), hide_index=True, width="stretch")
+        else:
+            st.caption("No nuisance edits or shape? effects found.")
+
+
+@st.fragment
+def viewer(reader, threshold, after_reader=None):
+    before = reader.card
+    after = after_reader.card if after_reader else None
+    cards = (before, after) if after else (before,)
+    if any(fingerprint(card.path) != card.revision for card in cards):
+        st.rerun()
+
+    options = [ch for ch in before.channels if not after or ch in after.channels]
+    shortlist = comparison_shortlist(before, after) if after else []
+    if after and not options:
+        st.warning("The cards have no exactly matching channels to plot.")
+        comparison_differences(before, after, [], shortlist)
+        return
+
+    controls, results = st.columns([1, 2], gap="medium")
+    with controls:
+        channels = select_channels(options)
+        selected = select_processes(cards, channels) if channels else []
+        if after:
+            view = st.radio(
+                "Nuisance view",
+                ["Card edits", "All effects"],
+                horizontal=True,
+                help="Card edits shows changed declarations and shape? effects. All effects also includes retained declarations.",
+            )
+            candidates = (
+                [row["nuisance"] for row in shortlist]
+                if view == "Card edits"
+                else dict.fromkeys((*before.declarations, *after.declarations))
+            )
+        else:
+            relevant = {n for ch in channels for n in before.relevant.get(ch, ())}
+            candidates = [n for n in before.nuisances if n in relevant]
+        nuisance, count = select_nuisance(
+            cards, candidates, allow_empty=after is not None
+        )
+        with st.expander("Plot options"):
+            normalize = st.checkbox("Remove normalization effect")
+            log_y = st.checkbox("Logarithmic y-axis")
+            bands = (
+                st.checkbox("Show Up/Down statistical bands") if not after else False
+            )
+            if normalize and len(channels) > 1:
+                st.caption("Normalization uses totals across the selected channels.")
+    with results:
+        if not channels:
+            st.info("Select at least one channel.")
+        elif not selected:
+            st.info("Select at least one process.")
+        elif not count:
+            message = "No matching nuisances. Adjust the nuisance filters."
+            if not candidates:
+                message = (
+                    "No nuisances in this view. Try All effects."
+                    if after
+                    else "No shape nuisances in the selected channels."
+                )
+            st.info(message)
+        elif nuisance is None:
+            st.info("Choose a nuisance to load its templates.")
+        else:
+            st.subheader(nuisance)
+            channel_label = (
+                channels[0] if len(channels) == 1 else f"{len(channels)} channels"
+            )
+            process_label = (
+                selected[0] if len(selected) == 1 else f"{len(selected)} processes"
+            )
+            kind = f" · {before.nuisances[nuisance]}" if not after else ""
+            st.caption(f"{channel_label} · {process_label}{kind}")
+            if after:
+                compare_shapes(
+                    reader, after_reader, channels, selected, nuisance, normalize, log_y
+                )
+            else:
+                inspect_shapes(
+                    before,
+                    reader,
+                    channels,
+                    selected,
+                    nuisance,
+                    normalize,
+                    log_y,
+                    bands,
+                )
+        if after:
+            comparison_differences(before, after, channels, shortlist)
+    if not after:
+        scan_panel(
+            before, reader.mappings, reader.mass, reader.keywords, threshold, channels
+        )
 
 
 def main():
@@ -593,14 +728,15 @@ def main():
     if after_card:
         mode = st.radio("Mode", ["Inspect", "Compare"], index=1, horizontal=True, key="viewer_mode")
         if mode == "Compare":
-            comparison_inspector(card, after_card, reader, st.session_state["compare_reader"])
+            viewer(reader, threshold, st.session_state["compare_reader"])
             return
-    a, b, c, d = st.columns(4)
-    a.metric("Channels", len(card.channels))
-    b.metric("Process columns", len(card.parsed.keyline))
-    c.metric("Shape nuisances", len(card.nuisances))
-    d.metric("Affected pairs", len(card.coefficients))
+    viewer(reader, threshold)
     with st.expander("Datacard overview and file resolution"):
+        a, b, c, d = st.columns(4)
+        a.metric("Channels", len(card.channels))
+        b.metric("Process columns", len(card.parsed.keyline))
+        c.metric("Shape nuisances", len(card.nuisances))
+        d.metric("Affected pairs", len(card.coefficients))
         st.write("Nuisance types:", dict(Counter(s[2] for s in card.parsed.systs)))
         channel = st.selectbox("Overview channel", list(card.channels))
         st.dataframe(
@@ -662,7 +798,6 @@ def main():
                 f"{len(missing)} channel/process mappings have unresolved files."
             )
         st.dataframe(pd.DataFrame(missing or resolutions), hide_index=True, height=200)
-    inspector(card, reader, threshold, mappings, mass, keywords)
 
 
 main()

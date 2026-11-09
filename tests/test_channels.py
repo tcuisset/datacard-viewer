@@ -121,58 +121,68 @@ norm shape 1 - - - -
     return path, root
 
 
-def app(path, monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["app.py", "--card", str(path)])
+def app(path, monkeypatch, after=None):
+    argv = ["app.py", "--card", str(path)]
+    if after:
+        argv += ["--compare-card", str(after)]
+    monkeypatch.setattr(sys, "argv", argv)
     return AppTest.from_file(Path("app.py").resolve(), default_timeout=10).run()
 
 
-def test_multi_channel_ui_order_unaffected_scans_and_toggle(multi_card, monkeypatch):
+def test_multi_channel_ui_order_unaffected_scans_and_process_presets(
+    multi_card, monkeypatch
+):
     at = app(multi_card[0], monkeypatch)
     assert not at.exception
-    at.selectbox(key="single_channel").set_value("two").run()
-    at.toggle[0].set_value(True).run()
-    assert at.multiselect(key="multi_channels").value == ["two"]
-    at.multiselect(key="multi_channels").set_value(["two", "one"]).run()
+    assert at.multiselect(key="channels").value == ["one"]
+    at.multiselect(key="channels").set_value(["two", "one"]).run()
     assert not at.exception
     assert len(at.get("plotly_chart")) == 1
-    at.checkbox[0].check().run()
+    next(
+        c for c in at.checkbox if c.label == "Remove normalization effect"
+    ).check().run()
     assert not at.exception
     # Raw totals: first channel is unaffected; normalization is common.
-    assert (
-        next(m for m in at.metric if m.label == "Up integral").value == "66"
-    )  # Up total, with the four overview metrics first.
+    assert next(m for m in at.metric if m.label == "Up integral").value == "66"
+    assert at.dataframe[0].value.channel.tolist() == ["two", "one"]
     next(b for b in at.button if b.label == "Scan selected channels").click().run()
     job = at.session_state["channel_scan"]
     job.thread.join(5)
     assert job.channels == {"one", "two"}
     at.run()
     assert not at.exception
-    at.toggle[0].set_value(False).run()
-    assert at.selectbox(key="single_channel").value == "two"
-    at.toggle[0].set_value(True).run()
-    at.multiselect(key="multi_channels").set_value(["one", "other"]).run()
+    at.multiselect(key="channels").set_value(["one", "other"]).run()
     assert not at.exception and not at.error
     assert len(at.get("plotly_chart")) == 1
-    process = next(s for s in at.selectbox if s.label == "Process")
-    assert process.options == ["b", "s", "different"]
+    assert at.multiselect(key="processes").options == ["b", "s", "different"]
     assert any("zero yield" in w.value for w in at.warning)
-    process.set_value("different").run()
+    at.multiselect(key="processes").set_value(["different"]).run()
     assert not at.exception and not at.error
     assert len(at.get("plotly_chart")) == 1
     assert next(m for m in at.metric if m.label == "Nominal integral").value == "30"
     assert any("one: No selected processes" in w.value for w in at.warning)
-    at.radio[0].set_value("All backgrounds").run()
-    assert not at.exception
-    at.multiselect(key="multi_channels").set_value([]).run()
-    assert any("Select at least one" in info.value for info in at.info)
+    for label, expected in [
+        ("Backgrounds", ["b", "different"]),
+        ("Signals", ["s"]),
+        ("All", ["b", "s", "different"]),
+    ]:
+        next(b for b in at.button if b.label == label).click().run()
+        assert at.multiselect(key="processes").value == expected
+        assert not at.exception
+    at.multiselect(key="processes").set_value(["s", "different"]).run()
+    assert next(m for m in at.metric if m.label == "Nominal integral").value == "60"
+    at.multiselect(key="processes").set_value([]).run()
+    assert any("Select at least one process" in info.value for info in at.info)
+    at.multiselect(key="channels").set_value([]).run()
+    assert any("Select at least one channel" in info.value for info in at.info)
+    assert next(b for b in at.button if b.label == "Scan selected channels").disabled
 
 
 def test_multi_channel_read_failure_never_silently_omits_channel(
     multi_card, monkeypatch
 ):
     at = app(multi_card[0], monkeypatch)
-    at.toggle[0].set_value(True).run()
-    at.multiselect(key="multi_channels").set_value(["one", "two"]).run()
+    at.multiselect(key="channels").set_value(["one", "two"]).run()
     # Remove a nominal, keeping the other channel and variations readable.
     with uproot.update(multi_card[1]) as f:
         del f["two"]["b"]
@@ -185,13 +195,12 @@ def test_reload_same_card_recreates_reader_without_losing_channels(
     multi_card, monkeypatch
 ):
     at = app(multi_card[0], monkeypatch)
-    at.toggle[0].set_value(True).run()
-    at.multiselect[0].set_value(["two", "one"]).run()
+    at.multiselect(key="channels").set_value(["two", "one"]).run()
     old_reader = at.session_state["reader"]
     next(b for b in at.button if b.label == "Open / Reload").click().run()
     assert not at.error and not at.exception
     assert at.session_state["reader"] is not old_reader
-    assert at.multiselect[0].value == ["two", "one"]
+    assert at.multiselect(key="channels").value == ["two", "one"]
     assert len(at.get("plotly_chart")) == 1
     assert not old_reader.files
 
@@ -233,33 +242,45 @@ def test_ratio_range_handles_zero_denominators_and_flat_variations():
     assert figure(undefined).layout.yaxis2.range == pytest.approx([0.99, 1.01])
 
 
-def test_channel_name_filter_bulk_selection(multi_card, monkeypatch):
-    at = app(multi_card[0], monkeypatch)
-    at.toggle[0].set_value(True).run()
-    at.multiselect(key="multi_channels").set_value(["two", "one"]).run()
+@pytest.mark.parametrize("compare_mode", [False, True], ids=["inspect", "compare"])
+def test_channel_name_filter_bulk_selection(multi_card, monkeypatch, compare_mode):
+    path = multi_card[0]
+    after = None
+    channels = ["one", "two", "other"]
+    if compare_mode:
+        after = path.with_name("after.txt")
+        after.write_text(path.read_text().replace("other", "after_only"))
+        channels = ["one", "two"]
+    at = app(path, monkeypatch, after)
+    assert at.multiselect(key="channels").options == channels
+    at.multiselect(key="channels").set_value(["two", "one"]).run()
 
     def select_matches():
         return next(b for b in at.button if b.label == "Select matching channels")
 
     assert select_matches().disabled
     at.text_input(key="channel_filter").set_value("  ONE  ").run()
-    assert at.multiselect(key="multi_channels").value == ["two", "one"]
+    assert at.multiselect(key="channels").value == ["two", "one"]
     select_matches().click().run()
-    assert at.multiselect(key="multi_channels").value == ["one"]
+    assert at.multiselect(key="channels").value == ["one"]
     assert not at.exception
-    at.radio[0].set_value("All backgrounds").run()
     at.text_input(key="channel_filter").set_value("o").run()
     select_matches().click().run()
-    assert at.multiselect(key="multi_channels").value == ["one", "two", "other"]
+    assert at.multiselect(key="channels").value == channels
     # Manual adjustments remain available, and filtering alone never drops them.
-    at.multiselect(key="multi_channels").set_value(["two", "one"]).run()
+    at.multiselect(key="channels").set_value(["two", "one"]).run()
     at.text_input(key="channel_filter").set_value("missing").run()
     assert select_matches().disabled
-    assert at.multiselect(key="multi_channels").value == ["two", "one"]
+    assert at.multiselect(key="channels").value == ["two", "one"]
     assert any("0 matching channel" in c.value for c in at.caption)
     at.text_input(key="channel_filter").set_value("   ").run()
     assert select_matches().disabled
-    assert at.multiselect(key="multi_channels").value == ["two", "one"]
+    assert at.multiselect(key="channels").value == ["two", "one"]
+    if compare_mode:
+        assert not at.session_state["reader"].files
+        assert not at.session_state["compare_reader"].files
+        at.radio(key="viewer_mode").set_value("Inspect").run()
+        assert at.multiselect(key="channels").value == ["two", "one"]
     assert not at.exception
 
 

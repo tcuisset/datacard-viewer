@@ -115,6 +115,8 @@ def test_shape_optional_and_partial_pair(model):
     c = compare(reader, "c", ["b"], "fallback")
     np.testing.assert_allclose(c.up.values, [11, 22])
     np.testing.assert_allclose(c.down.values, np.array([10, 20]) / 1.1)
+    fallback_figure = figure(c, remove_normalization=True)
+    assert fallback_figure.layout.annotations[0].text == "Log-normal (lnN)"
     assert (
         "fallback" in c.warnings[1]
         if len(c.warnings) > 1
@@ -167,13 +169,19 @@ def test_before_after_datacard_responses(tmp_path, monkeypatch):
     np.testing.assert_allclose(sym.down.values, np.array([10, 20]) / 1.2)
     grouped = compare_response(b_reader, "c", ["b", "gone"], "sym")
     np.testing.assert_allclose(grouped.up.values, [14.8, 28.2])
-    overlaid, matching = compare_figure([("c", grouped)], [("c", grouped)])
+    shape = compare_response(b_reader, "c", ["b"], "optional")
+    overlaid, matching = compare_figure(
+        [("c", shape)], [("c", grouped)], remove_normalization=True
+    )
     assert matching
     assert overlaid.data[1].line.dash == "dash"
     assert overlaid.data[6].line.dash == "solid"
     assert overlaid.data[3].line.dash == "dash"
     assert overlaid.data[8].line.dash == "solid"
     assert len(set(overlaid.data[8].y[::2])) > 1
+    ratio_label = next(a for a in overlaid.layout.annotations if a.yref == "y2 domain")
+    assert ratio_label.text == "Before · <b>Shape</b><br>After · <b>Log-normal (lnN)</b>"
+    assert "Log-normal (lnN)" in overlaid.data[8].hovertemplate
     asym = compare_response(a_reader, "c", ["b"], "asym")
     np.testing.assert_allclose(asym.up.values, [14, 28])
     np.testing.assert_allclose(asym.down.values, [7, 14])
@@ -194,12 +202,24 @@ def test_before_after_datacard_responses(tmp_path, monkeypatch):
     assert not at.exception
     at.radio(key="viewer_mode").set_value("Compare").run()
     assert not at.exception
+    assert at.selectbox(key="compare_nuisance").value is None
     assert not at.session_state["reader"].files
     assert not at.session_state["compare_reader"].files
+    next(b for b in at.button if b.label == "→").click().run()
+    assert at.selectbox(key="compare_nuisance").value == "sym"
+    assert at.session_state["reader"].files
+    assert at.session_state["compare_reader"].files
+    next(b for b in at.button if b.label == "Open / Reload").click().run()
     at.selectbox(key="compare_nuisance").set_value("optional").run()
     assert not at.exception
     assert len(at.session_state["reader"].arrays) == 3
     assert len(at.session_state["compare_reader"].arrays) == 1
+    next(b for b in at.button if b.label == "Backgrounds").click().run()
+    assert at.multiselect(key="processes").value == ["b", "gone", "new"]
+    at.multiselect(key="processes").set_value(["new"]).run()
+    assert not at.exception and not at.error
+    yields = at.dataframe[0].value
+    assert yields["nominal"].tolist() == pytest.approx([0, 9])
 
 
 def test_variance_cache_reload_and_eviction(model):
@@ -359,7 +379,10 @@ def test_streamlit_workflow(model, monkeypatch):
     at = AppTest.from_file(Path("app.py").resolve(), default_timeout=10).run()
     assert not at.exception
     assert len(at.get("plotly_chart")) == 1
-    at.radio[0].set_value("All backgrounds").run()
+    next(b for b in at.button if b.label == "→").click().run()
+    assert at.selectbox(key="nuisance").value == "distort"
+    next(b for b in at.button if b.label == "←").click().run()
+    assert at.selectbox(key="nuisance").value == "norm"
     assert not at.exception
     at.checkbox[0].check().run()
     assert not at.exception
