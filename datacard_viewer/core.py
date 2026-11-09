@@ -348,7 +348,6 @@ class Comparison:
     down: Template
     warnings: tuple = ()
     coefficients: dict = field(default_factory=dict)
-    lognormal: bool = False
 
     def normalized(self):
         if min(self.nominal.integral, self.up.integral, self.down.integral) <= 0:
@@ -359,7 +358,6 @@ class Comparison:
             self.down.scaled(self.nominal.integral / self.down.integral),
             self.warnings,
             self.coefficients,
-            self.lognormal,
         )
 
 
@@ -478,7 +476,6 @@ def compare_response(reader, channel, processes, nuisance, side="card"):
         zero = Template(reference.edges.copy(), np.zeros_like(reference.values), np.zeros_like(reference.variances))
         return Comparison(zero, zero, zero, ("No selected processes in this channel: zero yield.",), {})
     nominal, up, down, warnings, coefficients = [], [], [], [], {}
-    active_kinds = []
     for process in processes:
         n = reader.read(channel, process)
         kind, coefficient = _effective_declaration(reader.card, nuisance, channel, process)
@@ -488,7 +485,6 @@ def compare_response(reader, channel, processes, nuisance, side="card"):
             down.append(n)
             continue
         coefficients[process] = coefficient
-        active_kinds.append(kind)
         if kind == "lnN":
             if isinstance(coefficient, list):
                 low, high = coefficient  # Combine stores asymmetric lnN as down/up.
@@ -515,7 +511,6 @@ def compare_response(reader, channel, processes, nuisance, side="card"):
             else:
                 high, low = coefficient, 1 / coefficient
             variations = [n.scaled(high), n.scaled(low)]
-            active_kinds[-1] = "lnN"
             warnings.append(f"{side}: {channel}/{process}: shape? log-normal fallback")
         elif missing:
             raise ValueError(
@@ -533,7 +528,6 @@ def compare_response(reader, channel, processes, nuisance, side="card"):
         add(down),
         tuple(warnings),
         coefficients,
-        bool(active_kinds) and all(kind == "lnN" for kind in active_kinds),
     )
 
 

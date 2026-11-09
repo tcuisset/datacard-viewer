@@ -166,12 +166,13 @@ def test_before_after_datacard_responses(tmp_path, monkeypatch):
     np.testing.assert_allclose(sym.up.values, [12, 24])
     np.testing.assert_allclose(sym.down.values, np.array([10, 20]) / 1.2)
     grouped = compare_response(b_reader, "c", ["b", "gone"], "sym")
-    assert grouped.lognormal
     np.testing.assert_allclose(grouped.up.values, [14.8, 28.2])
     overlaid, matching = compare_figure([("c", grouped)], [("c", grouped)])
     assert matching
-    assert overlaid.data[1].line.dash == "longdash"
-    assert overlaid.data[6].line.dash == "dashdot"
+    assert overlaid.data[1].line.dash == "dash"
+    assert overlaid.data[6].line.dash == "solid"
+    assert overlaid.data[3].line.dash == "dash"
+    assert overlaid.data[8].line.dash == "solid"
     assert len(set(overlaid.data[8].y[::2])) > 1
     asym = compare_response(a_reader, "c", ["b"], "asym")
     np.testing.assert_allclose(asym.up.values, [14, 28])

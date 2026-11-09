@@ -469,9 +469,7 @@ def comparison_inspector(before, after, before_reader, after_reader):
             for side, items in (("Before", before_comparisons), ("After", after_comparisons)):
                 for ch, comparison in items:
                     for warning in comparison.warnings:
-                        if "shape? log-normal fallback" in warning:
-                            st.info(warning)
-                        else:
+                        if "shape? log-normal fallback" not in warning:
                             st.warning(warning)
             plot_totals = [
                 sum(getattr(c, field).integral for _, c in items)

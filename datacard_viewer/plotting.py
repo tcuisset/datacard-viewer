@@ -189,7 +189,6 @@ def display_channels(comparisons, remove_normalization=False):
                 c.down.scaled(nominal / down),
                 c.warnings,
                 c.coefficients,
-                c.lognormal,
             ),
         )
         for name, c in comparisons
@@ -300,7 +299,7 @@ def compare_figure(before, after, remove_normalization=False, log_y=False):
         if min(totals) <= 0:
             return items
         return [
-            (name, Comparison(c.nominal, c.up.scaled(nominal / up), c.down.scaled(nominal / down), c.warnings, c.coefficients, c.lognormal))
+            (name, Comparison(c.nominal, c.up.scaled(nominal / up), c.down.scaled(nominal / down), c.warnings, c.coefficients))
             for name, c in items
         ]
 
@@ -323,19 +322,17 @@ def compare_figure(before, after, remove_normalization=False, log_y=False):
         edges = b.nominal.edges
         x = np.column_stack((edges[:-1], edges[1:])).ravel() + offset
         custom = np.repeat(np.column_stack((edges[:-1], edges[1:])), 2, axis=0)
-        for side, comparison, dash in (("Before", b, "solid"), ("After", a, "dash")):
+        for side, comparison, dash in (("Before", b, "dash"), ("After", a, "solid")):
             for name, template in zip(("Nominal", "Up", "Down"), (comparison.nominal, comparison.up, comparison.down)):
                 label = f"{side} {name}"
-                style = ("longdash" if side == "Before" else "dashdot") if comparison.lognormal and name != "Nominal" else dash
-                fig.add_trace(go.Scatter(x=x, y=np.repeat(template.values, 2), mode="lines", name=label, legendgroup=label, showlegend=channel_index == 0, connectgaps=False, customdata=custom, line=dict(color=direction[name], dash=style, width=2), hovertemplate=f"{html.escape(channel)}<br>{label}<br>bin=[%{{customdata[0]:g}}, %{{customdata[1]:g}}]<br>value=%{{y:.6g}}<extra></extra>"), row=1, col=1)
+                fig.add_trace(go.Scatter(x=x, y=np.repeat(template.values, 2), mode="lines", name=label, legendgroup=label, showlegend=channel_index == 0, connectgaps=False, customdata=custom, line=dict(color=direction[name], dash=dash, width=2), hovertemplate=f"{html.escape(channel)}<br>{label}<br>bin=[%{{customdata[0]:g}}, %{{customdata[1]:g}}]<br>value=%{{y:.6g}}<extra></extra>"), row=1, col=1)
             for name, template in (("Up", comparison.up), ("Down", comparison.down)):
                 values = ratios(template.values, comparison.nominal.values)
                 finite = values[np.isfinite(values)]
                 if finite.size:
                     ratio_low, ratio_high = min(ratio_low, float(finite.min())), max(ratio_high, float(finite.max()))
                 label = f"{side} {name} / nominal"
-                style = ("longdash" if side == "Before" else "dashdot") if comparison.lognormal else dash
-                fig.add_trace(go.Scatter(x=x, y=np.repeat(values, 2), mode="lines", name=label, legendgroup=f"{side} {name}", showlegend=channel_index == 0, connectgaps=False, customdata=custom, line=dict(color=direction[name], dash=style, width=2), hovertemplate=f"{html.escape(channel)}<br>{label}<br>bin=[%{{customdata[0]:g}}, %{{customdata[1]:g}}]<br>ratio=%{{y:.6g}}<extra></extra>"), row=2, col=1)
+                fig.add_trace(go.Scatter(x=x, y=np.repeat(values, 2), mode="lines", name=label, legendgroup=f"{side} {name}", showlegend=channel_index == 0, connectgaps=False, customdata=custom, line=dict(color=direction[name], dash=dash, width=2), hovertemplate=f"{html.escape(channel)}<br>{label}<br>bin=[%{{customdata[0]:g}}, %{{customdata[1]:g}}]<br>ratio=%{{y:.6g}}<extra></extra>"), row=2, col=1)
         fig.add_annotation(x=(edges[0] + edges[-1]) / 2 + offset, y=1.02, xref="x", yref="paper", text=html.escape(channel), showarrow=False, yanchor="bottom", font=dict(size=11))
         cursor += edges[-1] - edges[0] + gap
     padding = 0.1 * (ratio_high - ratio_low) if ratio_high > ratio_low else 0.01
