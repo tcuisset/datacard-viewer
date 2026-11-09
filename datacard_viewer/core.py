@@ -351,6 +351,14 @@ class Comparison:
     # Resolved families of active effects. None means provenance was not supplied.
     effect_types: frozenset[str] | None = None
 
+    @property
+    def has_effect(self):
+        """Whether either variation changes a bin yield."""
+        return any(
+            not np.array_equal(variation.values, self.nominal.values)
+            for variation in (self.up, self.down)
+        )
+
     def normalized(self):
         if min(self.nominal.integral, self.up.integral, self.down.integral) <= 0:
             raise ValueError("Normalization removal requires positive integrals")

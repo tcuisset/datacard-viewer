@@ -1,5 +1,6 @@
 """Multi-channel coordinates, shared normalization, and selection workflow."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -189,6 +190,61 @@ def test_multi_channel_read_failure_never_silently_omits_channel(
     at.run()
     assert any("Channel two" in error.value for error in at.error)
     assert not at.get("plotly_chart")
+
+
+@pytest.mark.parametrize("compare_mode", [False, True], ids=["inspect", "compare"])
+def test_hide_unaffected_channels_only_filters_plot(
+    multi_card, monkeypatch, compare_mode
+):
+    path, _ = multi_card
+    after = None
+    if compare_mode:
+        after = path.with_name("after.txt")
+        after.write_text(
+            path.read_text().replace("norm shape 1 - - - -", "norm lnN - - 1.2 - -")
+        )
+
+    at = app(path, monkeypatch, after)
+    selected = ["other", "two", "one"]
+    at.multiselect(key="channels").set_value(selected).run()
+    if compare_mode:
+        at.selectbox(key="compare_nuisance").set_value("norm").run()
+    at.multiselect(key="processes").set_value(["b"]).run()
+    next(
+        c for c in at.checkbox if c.label == "Remove normalization effect"
+    ).check().run()
+
+    def plotted_names():
+        (plot,) = at.get("plotly_chart")
+        spec = json.loads(plot.proto.spec)
+        return [
+            a["text"] for a in spec["layout"]["annotations"] if a["yref"] == "paper"
+        ]
+
+    assert plotted_names() == selected
+    if not compare_mode:
+        full_bins = at.dataframe[1].value
+        affected_ratios = full_bins.loc[full_bins.channel == "one", "up_over_nominal"]
+
+    next(c for c in at.checkbox if c.label == "Hide unaffected channels").check().run()
+    assert plotted_names() == (["two", "one"] if compare_mode else ["one"])
+    assert at.multiselect(key="channels").value == selected
+    assert list(dict.fromkeys(at.dataframe[0].value.channel)) == selected
+    if not compare_mode:
+        np.testing.assert_allclose(
+            at.dataframe[1].value.up_over_nominal, affected_ratios
+        )
+
+    at.multiselect(key="processes").set_value(["s"]).run()
+    assert not at.error and not at.exception
+    assert not at.get("plotly_chart")
+    assert any("changes no bin yields" in info.value for info in at.info)
+    assert at.multiselect(key="channels").value == selected
+
+    next(
+        c for c in at.checkbox if c.label == "Hide unaffected channels"
+    ).uncheck().run()
+    assert plotted_names() == selected
 
 
 def test_reload_same_card_recreates_reader_without_losing_channels(

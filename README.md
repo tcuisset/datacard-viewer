@@ -86,6 +86,12 @@ Processes absent from a selected channel or card contribute zero yield there.
 Choose a **Nuisance** directly or step through the list with the arrows next to
 the picker. **Filter nuisances** narrows the list by datacard group or name.
 
+Under **Plot options**, **Hide unaffected channels** shows only channels where
+Up or Down changes a bin yield in the selected process sum before normalization.
+Compare keeps a channel when either card shows a change. Normalization, yield
+summaries, and scans still use the full channel selection. Plot downloads reflect
+the visible channels.
+
 ## Inspect shapes
 
 Each channel occupies a separate segment in both panels, with its own physical

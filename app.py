@@ -24,6 +24,7 @@ from datacard_viewer.plotting import (
     channel_figure,
     channels_frame,
     compare_figure,
+    display_channels,
 )
 from datacard_viewer.reporting import scan_exports
 
@@ -287,7 +288,31 @@ def processes_by_channel(card, channels, selected):
     return {ch: [p for p in card.channels[ch] if p in selected] for ch in channels}
 
 
-def inspect_shapes(card, reader, channels, selected, nuisance, normalize, log_y, bands):
+def visible_channels(comparisons, hide_unaffected, after=()):
+    if not hide_unaffected:
+        return {ch for ch, _ in comparisons}
+    shown = {ch for group in (comparisons, after) for ch, c in group if c.has_effect}
+    if not shown:
+        st.info(
+            "This nuisance changes no bin yields for the selected channels and processes."
+        )
+    elif len(shown) < len(comparisons):
+        st.caption(
+            f"Showing {len(shown)} of {len(comparisons)} selected channels in the plot."
+        )
+    return shown
+
+
+def plotted_channels(comparisons, normalize, shown):
+    # Normalize the full selection before hiding channels to preserve plotted values.
+    return [
+        item for item in display_channels(comparisons, normalize) if item[0] in shown
+    ]
+
+
+def inspect_shapes(
+    card, reader, channels, selected, nuisance, normalize, log_y, bands, hide_unaffected
+):
     processes = processes_by_channel(card, channels, selected)
     try:
         comparisons = []
@@ -319,13 +344,7 @@ def inspect_shapes(card, reader, channels, selected, nuisance, normalize, log_y,
             with st.expander(f"Excluded under/overflow reports ({len(flow_notices)})"):
                 for notice in flow_notices:
                     st.write(notice)
-        if log_y and any(
-            (h.values <= 0).any()
-            for _, c in comparisons
-            for h in (c.nominal, c.up, c.down)
-        ):
-            st.warning("Log y disabled: selected templates contain nonpositive bins.")
-            log_y = False
+        shown = visible_channels(comparisons, hide_unaffected)
         n, u, d = (
             sum(getattr(c, name).integral for _, c in comparisons)
             for name in ("nominal", "up", "down")
@@ -340,18 +359,29 @@ def inspect_shapes(card, reader, channels, selected, nuisance, normalize, log_y,
             f"{d:,.6g}",
             f"{(d / n - 1) * 100:+.3g}%" if n else None,
         )
-        fig = channel_figure(comparisons, normalize, bands, log_y)
-        frame = channels_frame(comparisons, normalize)
-        st.plotly_chart(fig, width="stretch", key="shape_plot")
-        st.caption(
-            "Bands: stored template statistical errors. Ratio band: nominal fractional error reference, "
-            "not a propagated ratio uncertainty. Process sums assume independent template errors."
-            + (
-                " Normalized bands are scaled stored errors, without normalization covariance."
-                if normalize
-                else ""
+        if shown:
+            plotted = plotted_channels(comparisons, normalize, shown)
+            if log_y and any(
+                (h.values <= 0).any()
+                for _, c in plotted
+                for h in (c.nominal, c.up, c.down)
+            ):
+                st.warning(
+                    "Log y disabled: plotted templates contain nonpositive bins."
+                )
+                log_y = False
+            fig = channel_figure(plotted, variation_bands=bands, log_y=log_y)
+            frame = channels_frame(plotted)
+            st.plotly_chart(fig, width="stretch", key="shape_plot")
+            st.caption(
+                "Bands: stored template statistical errors. Ratio band: nominal fractional error reference, "
+                "not a propagated ratio uncertainty. Process sums assume independent template errors."
+                + (
+                    " Normalized bands are scaled stored errors, without normalization covariance."
+                    if normalize
+                    else ""
+                )
             )
-        )
         rows = [
             dict(
                 channel=ch,
@@ -367,28 +397,30 @@ def inspect_shapes(card, reader, channels, selected, nuisance, normalize, log_y,
             "Diagnostics remove normalization separately within each channel; normalization-only screening uses individual processes."
             + (
                 " The plotted normalization instead uses totals across the selected channels."
-                if normalize and len(channels) > 1
+                if shown and normalize and len(channels) > 1
                 else ""
             )
         )
-        frame = frame.assign(nuisance=nuisance, normalized=normalize)
-        frame["processes"] = frame.channel.map(lambda ch: " + ".join(processes[ch]))
-        a, b = st.columns(2)
-        a.download_button(
-            "Download plotted bins (CSV)",
-            frame.to_csv(index=False),
-            "shape_bins.csv",
-            "text/csv",
-        )
-        b.download_button(
-            "Download interactive plot (HTML)",
-            fig.to_html(include_plotlyjs=True).replace(
-                "<body>",
-                f"<body><h2>{html.escape(nuisance)}</h2><p>{html.escape(' · '.join(channels))} · {html.escape(' + '.join(selected))} · normalization removed: {normalize}</p>",
-            ),
-            "shape_plot.html",
-            "text/html",
-        )
+        if shown:
+            frame = frame.assign(nuisance=nuisance, normalized=normalize)
+            frame["processes"] = frame.channel.map(lambda ch: " + ".join(processes[ch]))
+            a, b = st.columns(2)
+            a.download_button(
+                "Download plotted bins (CSV)",
+                frame.to_csv(index=False),
+                "shape_bins.csv",
+                "text/csv",
+            )
+            plotted_names = " · ".join(ch for ch, _ in plotted)
+            b.download_button(
+                "Download interactive plot (HTML)",
+                fig.to_html(include_plotlyjs=True).replace(
+                    "<body>",
+                    f"<body><h2>{html.escape(nuisance)}</h2><p>{html.escape(plotted_names)} · {html.escape(' + '.join(selected))} · normalization removed: {normalize}</p>",
+                ),
+                "shape_plot.html",
+                "text/html",
+            )
         with st.expander("Template provenance and bin values"):
             st.json(
                 {
@@ -401,13 +433,21 @@ def inspect_shapes(card, reader, channels, selected, nuisance, normalize, log_y,
                     for ch, c in comparisons
                 }
             )
-            st.dataframe(frame, hide_index=True)
+            if shown:
+                st.dataframe(frame, hide_index=True)
     except Exception as exc:
         st.error(str(exc))
 
 
 def compare_shapes(
-    before_reader, after_reader, channels, selected, nuisance, normalize, log_y
+    before_reader,
+    after_reader,
+    channels,
+    selected,
+    nuisance,
+    normalize,
+    log_y,
+    hide_unaffected,
 ):
     before, after = before_reader.card, after_reader.card
     b_processes = processes_by_channel(before, channels, selected)
@@ -436,38 +476,40 @@ def compare_shapes(
                 for warning in comparison.warnings:
                     if "shape? log-normal fallback" not in warning:
                         st.warning(warning)
-        plot_totals = [
-            sum(getattr(c, field).integral for _, c in items)
-            for items in (before_comparisons, after_comparisons)
-            for field in ("nominal", "up", "down")
-        ]
-        if normalize and min(plot_totals) <= 0:
-            st.warning(
-                "Normalization removal requires positive nominal, Up, and Down totals in both cards. Showing raw plots."
-            )
-            normalize = False
-        fig, same_binning = compare_figure(
-            before_comparisons, after_comparisons, normalize, log_y
-        )
-        if same_binning:
-            st.plotly_chart(fig, width="stretch", key="compare_shape_plot")
-        else:
-            st.warning(
-                "Binning differs between cards; Before and After are shown separately with their own binning."
-            )
-            a, b = st.columns(2)
-            a.markdown("**Before**")
-            b.markdown("**After**")
-            a.plotly_chart(
-                channel_figure(before_comparisons, normalize, False, log_y),
-                width="stretch",
-                key="compare_before_plot",
-            )
-            b.plotly_chart(
-                channel_figure(after_comparisons, normalize, False, log_y),
-                width="stretch",
-                key="compare_after_plot",
-            )
+        shown = visible_channels(before_comparisons, hide_unaffected, after_comparisons)
+        if shown:
+            plot_totals = [
+                sum(getattr(c, field).integral for _, c in items)
+                for items in (before_comparisons, after_comparisons)
+                for field in ("nominal", "up", "down")
+            ]
+            if normalize and min(plot_totals) <= 0:
+                st.warning(
+                    "Normalization removal requires positive nominal, Up, and Down totals in both cards. Showing raw plots."
+                )
+                normalize = False
+            before_plot = plotted_channels(before_comparisons, normalize, shown)
+            after_plot = plotted_channels(after_comparisons, normalize, shown)
+            fig, same_binning = compare_figure(before_plot, after_plot, log_y=log_y)
+            if same_binning:
+                st.plotly_chart(fig, width="stretch", key="compare_shape_plot")
+            else:
+                st.warning(
+                    "Binning differs between cards; Before and After are shown separately with their own binning."
+                )
+                a, b = st.columns(2)
+                a.markdown("**Before**")
+                b.markdown("**After**")
+                a.plotly_chart(
+                    channel_figure(before_plot, log_y=log_y),
+                    width="stretch",
+                    key="compare_before_plot",
+                )
+                b.plotly_chart(
+                    channel_figure(after_plot, log_y=log_y),
+                    width="stretch",
+                    key="compare_after_plot",
+                )
         summaries = []
         for side, items in (
             ("Before", before_comparisons),
@@ -579,6 +621,11 @@ def viewer(reader, threshold, after_reader=None):
             bands = (
                 st.checkbox("Show Up/Down statistical bands") if not after else False
             )
+            hide_unaffected = st.checkbox(
+                "Hide unaffected channels",
+                help="Show channels where Up or Down changes a bin yield for the selected processes. "
+                "In Compare, a change in either card keeps the channel visible.",
+            )
             if normalize and len(channels) > 1:
                 st.caption("Normalization uses totals across the selected channels.")
     with results:
@@ -609,7 +656,14 @@ def viewer(reader, threshold, after_reader=None):
             st.caption(f"{channel_label} · {process_label}{kind}")
             if after:
                 compare_shapes(
-                    reader, after_reader, channels, selected, nuisance, normalize, log_y
+                    reader,
+                    after_reader,
+                    channels,
+                    selected,
+                    nuisance,
+                    normalize,
+                    log_y,
+                    hide_unaffected,
                 )
             else:
                 inspect_shapes(
@@ -621,6 +675,7 @@ def viewer(reader, threshold, after_reader=None):
                     normalize,
                     log_y,
                     bands,
+                    hide_unaffected,
                 )
         if after:
             comparison_differences(before, after, channels, shortlist)
