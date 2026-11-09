@@ -4,3 +4,12 @@ name = "datacard-viewer"
 
 [setup]
 script = "uv sync"
+
+[[actions]]
+name = "compare-cards"
+icon = "tool"
+command = '''
+uv run --locked --no-dev streamlit run app.py -- \
+  --card dPhijj_datacards/combined_allfs_dPhijj_v8.0.txt \
+  --path-map 'output/=' \
+  --compare-card dPhijj_datacards/optimized.txt'''
