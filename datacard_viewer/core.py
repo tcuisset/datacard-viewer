@@ -27,6 +27,16 @@ def fingerprint(path):
 
 @dataclass
 class Card:
+    """Parsed datacard plus indexes used by the viewer.
+
+    ``path`` and ``revision`` identify the source snapshot; ``parsed`` retains
+    the Combine parser result. ``channels`` maps channel names to process names,
+    while ``nuisances`` and ``relevant`` index shape nuisances globally and by
+    channel. ``coefficients`` stores active shape coefficients by
+    (nuisance, channel, process). ``declarations`` stores active supported
+    shape/lnN declarations by nuisance and (channel, process), for card diffs.
+    """
+
     path: Path
     revision: tuple
     parsed: object
@@ -34,6 +44,7 @@ class Card:
     nuisances: dict
     relevant: dict
     coefficients: dict
+    declarations: dict
 
     @classmethod
     def load(cls, path):
@@ -53,8 +64,18 @@ class Card:
             channels[channel].append(process)
         nuisances = {}
         coefficients = {}
+        declarations = defaultdict(dict)
         relevant = defaultdict(list)
         for name, _, kind, _, effects in dc.systs:
+            # Keep only active shape/lnN pair declarations. Missing pairs then
+            # naturally mean a dropped effect, and the sparse index avoids
+            # copying every nuisance's mostly empty channel/process matrix.
+            if kind in ("lnN", "shape", "shapeN", "shape?") and isinstance(effects, dict):
+                for channel, processes in channels.items():
+                    for process in processes:
+                        value = effects.get(channel, {}).get(process, 0)
+                        if value != 0 and not (kind == "lnN" and value == 1):
+                            declarations[name][channel, process] = (kind, value)
             if not kind.startswith("shape"):
                 continue
             if kind not in ("shape", "shapeN", "shape?"):
@@ -75,6 +96,7 @@ class Card:
             nuisances,
             dict(relevant),
             coefficients,
+            dict(declarations),
         )
 
     def processes(self, channel, selection, process=None):
@@ -326,6 +348,7 @@ class Comparison:
     down: Template
     warnings: tuple = ()
     coefficients: dict = field(default_factory=dict)
+    lognormal: bool = False
 
     def normalized(self):
         if min(self.nominal.integral, self.up.integral, self.down.integral) <= 0:
@@ -336,6 +359,7 @@ class Comparison:
             self.down.scaled(self.nominal.integral / self.down.integral),
             self.warnings,
             self.coefficients,
+            self.lognormal,
         )
 
 
@@ -398,7 +422,140 @@ def compare(reader, channel, processes, nuisance):
         add([n, *variations])
         up.append(variations[0])
         down.append(variations[1])
-    return Comparison(add(nominal), add(up), add(down), tuple(warnings), coefficients)
+    return Comparison(
+        add(nominal),
+        add(up),
+        add(down),
+        tuple(warnings),
+        coefficients,
+    )
+
+
+def _effective_declaration(card, nuisance, channel, process):
+    """Return the effective datacard declaration for one nuisance pair."""
+    declaration = card.declarations.get(nuisance, {}).get((channel, process))
+    if declaration is None:
+        return "dropped", 0
+    kind, value = declaration
+    if value == 0 or (kind == "lnN" and value == 1):
+        return "dropped", 0
+    return kind, value
+
+
+def comparison_shortlist(before, after):
+    """Summarize text-level nuisance changes without opening ROOT files."""
+    rows = []
+    for name in dict.fromkeys((*before.declarations, *after.declarations)):
+        b_entries = before.declarations.get(name, {})
+        a_entries = after.declarations.get(name, {})
+        pairs = set(b_entries) | set(a_entries)
+        changed = [
+            pair
+            for pair in pairs
+            if _effective_declaration(before, name, *pair)
+            != _effective_declaration(after, name, *pair)
+        ]
+        b_kinds = {kind for kind, _ in b_entries.values()}
+        a_kinds = {kind for kind, _ in a_entries.values()}
+        root_check = "shape?" in b_kinds | a_kinds
+        if changed or root_check:
+            rows.append(
+                {
+                    "nuisance": name,
+                    "changed pairs": len(changed),
+                    "Before types": ", ".join(sorted(b_kinds)) or "—",
+                    "After types": ", ".join(sorted(a_kinds)) or "—",
+                    "ROOT check": root_check,
+                }
+            )
+    return rows
+
+
+def compare_response(reader, channel, processes, nuisance, side="card"):
+    """Build effective nominal/Up/Down predictions for shape and lnN effects."""
+    if not processes:
+        reference = reader.read(channel, reader.card.channels[channel][0])
+        zero = Template(reference.edges.copy(), np.zeros_like(reference.values), np.zeros_like(reference.variances))
+        return Comparison(zero, zero, zero, ("No selected processes in this channel: zero yield.",), {})
+    nominal, up, down, warnings, coefficients = [], [], [], [], {}
+    active_kinds = []
+    for process in processes:
+        n = reader.read(channel, process)
+        kind, coefficient = _effective_declaration(reader.card, nuisance, channel, process)
+        nominal.append(n)
+        if kind == "dropped":
+            up.append(n)
+            down.append(n)
+            continue
+        coefficients[process] = coefficient
+        active_kinds.append(kind)
+        if kind == "lnN":
+            if isinstance(coefficient, list):
+                low, high = coefficient  # Combine stores asymmetric lnN as down/up.
+            else:
+                high, low = coefficient, 1 / coefficient
+            up.append(n.scaled(high))
+            down.append(n.scaled(low))
+            continue
+        if not kind.startswith("shape"):
+            up.append(n)
+            down.append(n)
+            continue
+        mapped = reader.card.parsed.systematicsShapeMap.get((nuisance, channel, process), nuisance)
+        variations, missing = [], []
+        for suffix in ("Up", "Down"):
+            try:
+                variations.append(reader.read(channel, process, mapped + suffix))
+            except KeyError as exc:
+                variations.append(None)
+                missing.append(str(exc))
+        if len(missing) == 2 and kind == "shape?":
+            if isinstance(coefficient, list):
+                low, high = coefficient
+            else:
+                high, low = coefficient, 1 / coefficient
+            variations = [n.scaled(high), n.scaled(low)]
+            active_kinds[-1] = "lnN"
+            warnings.append(f"{side}: {channel}/{process}: shape? log-normal fallback")
+        elif missing:
+            raise ValueError(
+                f"{side}: {channel}/{process}/{nuisance}: missing variation endpoint: "
+                + "; ".join(missing)
+            )
+        elif coefficient != 1:
+            warnings.append(f"{side}: {channel}/{process}: shape coefficient {coefficient}; stored endpoints are shown")
+        add([n, *variations])
+        up.append(variations[0])
+        down.append(variations[1])
+    return Comparison(
+        add(nominal),
+        add(up),
+        add(down),
+        tuple(warnings),
+        coefficients,
+        bool(active_kinds) and all(kind == "lnN" for kind in active_kinds),
+    )
+
+
+def effect_rows(before, after, nuisance, channels, processes_by_channel):
+    rows = []
+    for channel in channels:
+        for process in dict.fromkeys((*before.channels.get(channel, ()), *after.channels.get(channel, ()))):
+            if process not in processes_by_channel[channel]:
+                continue
+            b = _effective_declaration(before, nuisance, channel, process)
+            a = _effective_declaration(after, nuisance, channel, process)
+            b_exists, a_exists = process in before.channels.get(channel, ()), process in after.channels.get(channel, ())
+            if not b_exists or not a_exists:
+                status = "Removed process" if b_exists else "Added process"
+            elif b[0] != "dropped" and a[0] == "dropped":
+                status = "Effect dropped"
+            elif b[0] == "dropped" and a[0] != "dropped":
+                status = "Effect added"
+            else:
+                status = "Changed" if b != a else "Retained"
+            rows.append({"channel": channel, "process": process, "Before type": b[0] if b_exists else "—", "Before factor/coefficient": str(b[1]) if b_exists else "—", "After type": a[0] if a_exists else "—", "After factor/coefficient": str(a[1]) if a_exists else "—", "status": status})
+    return rows
 
 
 def ratios(values, nominal):

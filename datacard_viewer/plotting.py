@@ -189,6 +189,7 @@ def display_channels(comparisons, remove_normalization=False):
                 c.down.scaled(nominal / down),
                 c.warnings,
                 c.coefficients,
+                c.lognormal,
             ),
         )
         for name, c in comparisons
@@ -277,6 +278,70 @@ def channels_frame(comparisons, remove_normalization=False):
         )
         frames.append(frame)
     return pd.concat(frames, ignore_index=True)
+
+
+def compare_figure(before, after, remove_normalization=False, log_y=False):
+    """Overlay two card predictions. Returns (figure, binning_matches)."""
+    before, after = list(before), list(after)
+    if [n for n, _ in before] != [n for n, _ in after]:
+        raise ValueError("Before and After channel selections must match")
+    matches = all(
+        np.array_equal(b.nominal.edges, a.nominal.edges)
+        for (_, b), (_, a) in zip(before, after)
+    )
+    if not matches:
+        return None, False
+
+    def normalize_group(items):
+        if not remove_normalization:
+            return items
+        totals = [sum(getattr(c, field).integral for _, c in items) for field in ("nominal", "up", "down")]
+        nominal, up, down = totals
+        if min(totals) <= 0:
+            return items
+        return [
+            (name, Comparison(c.nominal, c.up.scaled(nominal / up), c.down.scaled(nominal / down), c.warnings, c.coefficients, c.lognormal))
+            for name, c in items
+        ]
+
+    if remove_normalization:
+        all_totals = [
+            sum(getattr(c, field).integral for _, c in items)
+            for items in (before, after)
+            for field in ("nominal", "up", "down")
+        ]
+        if min(all_totals) <= 0:
+            remove_normalization = False
+    before, after = normalize_group(before), normalize_group(after)
+    fig = _base_figure(log_y)
+    direction = {"Nominal": "rgb(55,65,80)", "Up": "rgb(30,125,185)", "Down": "rgb(220,100,40)"}
+    gap = 0.1 * max(c.nominal.edges[-1] - c.nominal.edges[0] for _, c in before)
+    cursor = before[0][1].nominal.edges[0]
+    ratio_low = ratio_high = 1.0
+    for channel_index, ((channel, b), (_, a)) in enumerate(zip(before, after)):
+        offset = cursor - b.nominal.edges[0]
+        edges = b.nominal.edges
+        x = np.column_stack((edges[:-1], edges[1:])).ravel() + offset
+        custom = np.repeat(np.column_stack((edges[:-1], edges[1:])), 2, axis=0)
+        for side, comparison, dash in (("Before", b, "solid"), ("After", a, "dash")):
+            for name, template in zip(("Nominal", "Up", "Down"), (comparison.nominal, comparison.up, comparison.down)):
+                label = f"{side} {name}"
+                style = ("longdash" if side == "Before" else "dashdot") if comparison.lognormal and name != "Nominal" else dash
+                fig.add_trace(go.Scatter(x=x, y=np.repeat(template.values, 2), mode="lines", name=label, legendgroup=label, showlegend=channel_index == 0, connectgaps=False, customdata=custom, line=dict(color=direction[name], dash=style, width=2), hovertemplate=f"{html.escape(channel)}<br>{label}<br>bin=[%{{customdata[0]:g}}, %{{customdata[1]:g}}]<br>value=%{{y:.6g}}<extra></extra>"), row=1, col=1)
+            for name, template in (("Up", comparison.up), ("Down", comparison.down)):
+                values = ratios(template.values, comparison.nominal.values)
+                finite = values[np.isfinite(values)]
+                if finite.size:
+                    ratio_low, ratio_high = min(ratio_low, float(finite.min())), max(ratio_high, float(finite.max()))
+                label = f"{side} {name} / nominal"
+                style = ("longdash" if side == "Before" else "dashdot") if comparison.lognormal else dash
+                fig.add_trace(go.Scatter(x=x, y=np.repeat(values, 2), mode="lines", name=label, legendgroup=f"{side} {name}", showlegend=channel_index == 0, connectgaps=False, customdata=custom, line=dict(color=direction[name], dash=style, width=2), hovertemplate=f"{html.escape(channel)}<br>{label}<br>bin=[%{{customdata[0]:g}}, %{{customdata[1]:g}}]<br>ratio=%{{y:.6g}}<extra></extra>"), row=2, col=1)
+        fig.add_annotation(x=(edges[0] + edges[-1]) / 2 + offset, y=1.02, xref="x", yref="paper", text=html.escape(channel), showarrow=False, yanchor="bottom", font=dict(size=11))
+        cursor += edges[-1] - edges[0] + gap
+    padding = 0.1 * (ratio_high - ratio_low) if ratio_high > ratio_low else 0.01
+    fig.update_yaxes(range=[ratio_low - padding, ratio_high + padding], autorange=False, row=2, col=1)
+    fig.update_layout(height=690, margin=dict(l=55, r=25, t=115, b=45), legend=dict(orientation="h", y=1.17, yanchor="top"))
+    return fig, True
 
 
 def bins_frame(comparison, remove_normalization=False):

@@ -14,11 +14,13 @@ from datacard_viewer.core import (
     Template,
     candidate,
     compare,
+    compare_response,
+    comparison_shortlist,
     diagnose,
     ratios,
     summarize,
 )
-from datacard_viewer.plotting import bins_frame, figure
+from datacard_viewer.plotting import bins_frame, compare_figure, figure
 
 
 def write_root(path, entries):
@@ -123,6 +125,80 @@ def test_shape_optional_and_partial_pair(model):
         f["c/b_fallbackUp"] = (np.array([11.0, 22.0]), np.array([0.0, 1.0, 3.0]))
     with pytest.raises(ValueError, match="Missing variation"):
         compare(Reader(card), "c", ["b"], "fallback")
+
+
+def test_before_after_datacard_responses(tmp_path, monkeypatch):
+    before_root, after_root = tmp_path / "before.root", tmp_path / "after.root"
+    write_root(before_root, {
+        "b": ([10, 20], [1, 4]), "gone": ([2, 3], [1, 1]),
+        "b_retainedUp": ([12, 19], [1, 4]), "b_retainedDown": ([8, 21], [1, 4]),
+        "b_optionalUp": ([11, 22], [1, 4]), "b_optionalDown": ([9, 18], [1, 4]),
+        "b_partialUp": ([13, 20], [1, 4]),
+    })
+    write_root(after_root, {
+        "b": ([10, 20], [1, 4], [0, 2, 3]), "new": ([4, 5], [1, 1]),
+        "b_retainedUp": ([15, 18], [1, 4], [0, 2, 3]), "b_retainedDown": ([7, 22], [1, 4], [0, 2, 3]),
+    })
+
+    def make_card(path, rootname, processes, ids, rates, nuisances):
+        bins = " ".join(["c"] * len(processes.split()))
+        path.write_text(
+            f"imax 1\njmax *\nkmax *\nshapes * * {rootname} c/$PROCESS c/$PROCESS_$SYSTEMATIC\n"
+            f"bin c\nobservation -1\nbin {bins}\nprocess {processes}\nprocess {ids}\nrate {rates}\n{nuisances}\n"
+        )
+
+    before_path, after_path = tmp_path / "before.txt", tmp_path / "after.txt"
+    make_card(before_path, before_root.name, "b gone", "1 2", "30 5", "retained shape 1 -\nsym lnN 1.2 1.4\nasym lnN 0.8/1.25 -\noptional shape? 1.1 -\npartial shape? 1.1 -\ndrop shape - 1")
+    make_card(after_path, after_root.name, "new b", "2 1", "9 30", "retained shape - 1\nsym lnN - 1.3\nasym lnN - 0.7/1.4\noptional lnN - 1.15")
+    before, after = Card.load(before_path), Card.load(after_path)
+    shortlist = comparison_shortlist(before, after)
+    assert any(row["nuisance"] == "optional" and row["ROOT check"] for row in shortlist)
+    assert any(row["nuisance"] == "drop" for row in shortlist)
+    b_reader, a_reader = Reader(before), Reader(after)
+    np.testing.assert_allclose(compare_response(b_reader, "c", ["b"], "retained").up.values, [12, 19])
+    np.testing.assert_allclose(compare_response(a_reader, "c", ["b"], "retained").up.values, [15, 18])
+    _, matching = compare_figure(
+        [("c", compare_response(b_reader, "c", ["b"], "retained"))],
+        [("c", compare_response(a_reader, "c", ["b"], "retained"))],
+    )
+    assert not matching
+    sym = compare_response(b_reader, "c", ["b"], "sym")
+    np.testing.assert_allclose(sym.up.values, [12, 24])
+    np.testing.assert_allclose(sym.down.values, np.array([10, 20]) / 1.2)
+    grouped = compare_response(b_reader, "c", ["b", "gone"], "sym")
+    assert grouped.lognormal
+    np.testing.assert_allclose(grouped.up.values, [14.8, 28.2])
+    overlaid, matching = compare_figure([("c", grouped)], [("c", grouped)])
+    assert matching
+    assert overlaid.data[1].line.dash == "longdash"
+    assert overlaid.data[6].line.dash == "dashdot"
+    assert len(set(overlaid.data[8].y[::2])) > 1
+    asym = compare_response(a_reader, "c", ["b"], "asym")
+    np.testing.assert_allclose(asym.up.values, [14, 28])
+    np.testing.assert_allclose(asym.down.values, [7, 14])
+    np.testing.assert_allclose(compare_response(b_reader, "c", ["b"], "optional").up.values, [11, 22])
+    np.testing.assert_allclose(compare_response(a_reader, "c", ["b"], "optional").up.values, [11.5, 23])
+    assert "gone" not in after.channels["c"] and "new" in after.channels["c"]
+    # The Up endpoint exists but Down does not, so shape? must report the side and channel.
+    with pytest.raises(ValueError, match="Before: c/b/partial: missing variation endpoint"):
+        compare_response(Reader(Card.load(before_path)), "c", ["b"], "partial", "Before")
+    b_reader.close()
+    a_reader.close()
+    import sys
+
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setattr(sys, "argv", ["app.py", "--card", str(before_path), "--compare-card", str(after_path)])
+    at = AppTest.from_file(Path("app.py").resolve(), default_timeout=15).run()
+    assert not at.exception
+    at.radio(key="viewer_mode").set_value("Compare").run()
+    assert not at.exception
+    assert not at.session_state["reader"].files
+    assert not at.session_state["compare_reader"].files
+    at.selectbox(key="compare_nuisance").set_value("optional").run()
+    assert not at.exception
+    assert len(at.session_state["reader"].arrays) == 3
+    assert len(at.session_state["compare_reader"].arrays) == 1
 
 
 def test_variance_cache_reload_and_eviction(model):

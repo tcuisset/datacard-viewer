@@ -13,11 +13,20 @@ from datacard_viewer.core import (
     Reader,
     Scan,
     compare,
+    compare_response,
+    comparison_shortlist,
     diagnose,
+    effect_rows,
     fingerprint,
     summarize,
 )
-from datacard_viewer.plotting import bins_frame, channel_figure, channels_frame, figure
+from datacard_viewer.plotting import (
+    bins_frame,
+    channel_figure,
+    channels_frame,
+    compare_figure,
+    figure,
+)
 from datacard_viewer.reporting import scan_exports
 
 st.set_page_config(page_title="Combine shape viewer", page_icon="📊", layout="wide")
@@ -27,6 +36,8 @@ def arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--card", default="")
     parser.add_argument("--path-map", action="append", default=[])
+    parser.add_argument("--compare-card", default="")
+    parser.add_argument("--compare-path-map", action="append", default=[])
     parser.add_argument("--mass", type=float, default=125)
     parser.add_argument("--keyword", action="append", default=[])
     return parser.parse_known_args()[0]
@@ -375,6 +386,117 @@ def inspector(card, reader, threshold, mappings, mass, keywords):
     scan_panel(card, mappings, mass, keywords, threshold, channels)
 
 
+def comparison_inspector(before, after, before_reader, after_reader):
+    st.subheader("Before-and-after comparison")
+    st.caption("Shortlist compares datacard text. Retained shape templates may still differ in ROOT.")
+    common_channels = [ch for ch in before.channels if ch in after.channels]
+    added_channels = [ch for ch in after.channels if ch not in before.channels]
+    removed_channels = [ch for ch in before.channels if ch not in after.channels]
+    if added_channels or removed_channels:
+        st.info(f"Channels added: {', '.join(added_channels) or 'none'} · removed: {', '.join(removed_channels) or 'none'}")
+    if not common_channels:
+        st.warning("The cards have no exactly matching channels to plot.")
+        return
+    left, right = st.columns([1, 3])
+    with left:
+        channel_filter = st.text_input("Filter channel names", key="compare_channel_filter").strip()
+        choices = [ch for ch in common_channels if channel_filter.casefold() in ch.casefold()]
+        channels = st.multiselect("Channels (left-to-right order)", choices, default=choices[:1], key="compare_channels")
+        selection = st.radio("Processes", ["One process", "All backgrounds", "All processes"], key="compare_process_selection")
+        all_processes = list(dict.fromkeys(p for ch in channels for card in (before, after) for p in card.channels.get(ch, ())))
+        process = st.selectbox("Process", all_processes, key="compare_process", disabled=selection != "One process") if all_processes else None
+        group = st.selectbox("Nuisance group", ["All groups", *dict.fromkeys((*before.parsed.groups, *after.parsed.groups))], key="compare_group")
+        view = st.radio("Nuisance view", ["Card edits", "All effects"], key="compare_view")
+        query = st.text_input("Filter nuisance name", key="compare_nuisance_filter").casefold()
+        shortlist = comparison_shortlist(before, after)
+        if view == "Card edits":
+            candidate_names = [r["nuisance"] for r in shortlist]
+        else:
+            candidate_names = list(dict.fromkeys((*before.declarations, *after.declarations)))
+        group_members = set()
+        if group != "All groups":
+            group_members = set(before.parsed.groups.get(group, ())) | set(after.parsed.groups.get(group, ()))
+        names = [n for n in candidate_names if query in n.casefold() and (group == "All groups" or n in group_members)]
+        st.caption(f"{len(names)} matching nuisance(s); shortlist opened without reading ROOT templates.")
+        if view == "Card edits":
+            shortlist_rows = {row["nuisance"]: row for row in shortlist}
+        else:
+            shortlist_rows = {
+                row["nuisance"]: row
+                for row in shortlist
+            }
+        summaries = []
+        for name in names:
+            row = shortlist_rows.get(name)
+            if row is None:
+                b_types = {kind for kind, _ in before.declarations.get(name, {}).values()}
+                a_types = {kind for kind, _ in after.declarations.get(name, {}).values()}
+                row = {
+                    "nuisance": name,
+                    "changed pairs": 0,
+                    "Before types": ", ".join(sorted(b_types)) or "—",
+                    "After types": ", ".join(sorted(a_types)) or "—",
+                    "ROOT check": False,
+                }
+            summaries.append(row)
+        st.dataframe(pd.DataFrame(summaries), hide_index=True, width="stretch", height=220)
+        nuisance = st.selectbox("Select a nuisance to load its templates", ["Select a nuisance", *names], key="compare_nuisance")
+        if channels:
+            added = [{"channel": ch, "process": p} for ch in channels for p in after.channels[ch] if p not in before.channels[ch]]
+            removed = [{"channel": ch, "process": p} for ch in channels for p in before.channels[ch] if p not in after.channels[ch]]
+            with st.expander(f"Process changes · {len(added)} added · {len(removed)} removed"):
+                st.markdown("**Added processes**")
+                st.dataframe(pd.DataFrame(added, columns=["channel", "process"]), hide_index=True)
+                st.markdown("**Removed processes**")
+                st.dataframe(pd.DataFrame(removed, columns=["channel", "process"]), hide_index=True)
+        normalize = st.checkbox("Remove normalization effect", key="compare_normalize")
+        log_y = st.checkbox("Logarithmic y-axis", key="compare_log_y")
+    with right:
+        if not channels or not names or nuisance == "Select a nuisance":
+            st.info("Choose a nuisance above to read only its selected templates.")
+            return
+        b_processes = {ch: before.processes(ch, selection, process) for ch in channels}
+        a_processes = {ch: after.processes(ch, selection, process) for ch in channels}
+        displayed = {ch: list(dict.fromkeys((*b_processes[ch], *a_processes[ch]))) for ch in channels}
+        rows = effect_rows(before, after, nuisance, channels, displayed)
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        st.caption("Effective factors are shown in parser order; asymmetric lnN values are down/up. A dropped effect plots at unity when nominal is nonzero.")
+        try:
+            before_comparisons, after_comparisons = [], []
+            for ch in channels:
+                before_comparisons.append((ch, compare_response(before_reader, ch, b_processes[ch], nuisance, "Before")))
+                after_comparisons.append((ch, compare_response(after_reader, ch, a_processes[ch], nuisance, "After")))
+            for side, items in (("Before", before_comparisons), ("After", after_comparisons)):
+                for ch, comparison in items:
+                    for warning in comparison.warnings:
+                        if "shape? log-normal fallback" in warning:
+                            st.info(warning)
+                        else:
+                            st.warning(warning)
+            plot_totals = [
+                sum(getattr(c, field).integral for _, c in items)
+                for items in (before_comparisons, after_comparisons)
+                for field in ("nominal", "up", "down")
+            ]
+            if normalize and min(plot_totals) <= 0:
+                st.warning("Normalization removal requires positive nominal, Up, and Down totals in both cards. Showing raw plots.")
+                normalize = False
+            fig, same_binning = compare_figure(before_comparisons, after_comparisons, normalize, log_y)
+            if same_binning:
+                st.plotly_chart(fig, width="stretch", key="compare_shape_plot")
+            else:
+                st.warning("Binning differs between cards; Before and After are shown separately with their own binning.")
+                a, b = st.columns(2)
+                a.plotly_chart(channel_figure(before_comparisons, normalize, False, log_y), width="stretch", key="compare_before_plot")
+                b.plotly_chart(channel_figure(after_comparisons, normalize, False, log_y), width="stretch", key="compare_after_plot")
+            summaries = []
+            for side, items in (("Before", before_comparisons), ("After", after_comparisons)):
+                summaries.extend({"Card": side, "channel": ch, "nominal": c.nominal.integral, "up": c.up.integral, "down": c.down.integral} for ch, c in items)
+            st.dataframe(pd.DataFrame(summaries), hide_index=True, width="stretch")
+        except Exception as exc:
+            st.error(str(exc))
+
+
 def main():
     args = arguments()
     st.title("Combine shape viewer")
@@ -388,6 +510,11 @@ def main():
                 "ROOT path mappings (prefix=replacement, one per line)",
                 "\n".join(args.path_map),
                 help="For the combined example: output/= (empty replacement). Relative targets use the card directory.",
+            )
+            compare_path = st.text_input("After datacard (optional)", args.compare_card)
+            compare_mapping_text = st.text_area(
+                "After ROOT path mappings (prefix=replacement, one per line)",
+                "\n".join(args.compare_path_map),
             )
             mass = st.number_input("Mass ($MASS)", value=args.mass)
             keyword_text = st.text_area(
@@ -408,24 +535,34 @@ def main():
         )
     if submitted:
         cancel_scans()
-        old = st.session_state.pop("reader", None)
-        if old:
-            old.close()
+        for key in ("reader", "compare_reader"):
+            old = st.session_state.pop(key, None)
+            if old:
+                old.close()
         load_card.clear()
-        st.session_state["configuration"] = (path, mapping_text, mass, keyword_text)
+        st.session_state["configuration"] = (
+            path,
+            mapping_text,
+            mass,
+            keyword_text,
+            compare_path,
+            compare_mapping_text,
+        )
     elif "configuration" not in st.session_state and args.card:
         st.session_state["configuration"] = (
             args.card,
             "\n".join(args.path_map),
             args.mass,
             "\n".join(args.keyword),
+            args.compare_card,
+            "\n".join(args.compare_path_map),
         )
     config = st.session_state.get("configuration")
     if not config:
         st.info("Enter a datacard path in the sidebar to begin.")
         return
     try:
-        path, mapping_text, mass, keyword_text = config
+        path, mapping_text, mass, keyword_text, compare_path, compare_mapping_text = config
         mappings = parse_pairs(mapping_text)
         keywords = dict(parse_pairs(keyword_text))
         if set(keywords) & {"PROCESS", "CHANNEL", "SYSTEMATIC", "MASS"}:
@@ -442,9 +579,24 @@ def main():
             st.session_state["reader"] = Reader(card, mappings, mass, keywords)
             st.session_state["reader_identity"] = identity
         reader = st.session_state["reader"]
+        after_card = load_card(fingerprint(compare_path)) if compare_path.strip() else None
+        after_mappings = parse_pairs(compare_mapping_text)
+        if after_card:
+            after_identity = (after_card.revision, after_mappings, mass, tuple(keywords.items()))
+            if st.session_state.get("compare_reader_identity") != after_identity or "compare_reader" not in st.session_state:
+                old = st.session_state.pop("compare_reader", None)
+                if old:
+                    old.close()
+                st.session_state["compare_reader"] = Reader(after_card, after_mappings, mass, keywords)
+                st.session_state["compare_reader_identity"] = after_identity
     except Exception as exc:
         st.error(f"Could not open datacard: {exc}")
         return
+    if after_card:
+        mode = st.radio("Mode", ["Inspect", "Compare"], index=1, horizontal=True, key="viewer_mode")
+        if mode == "Compare":
+            comparison_inspector(card, after_card, reader, st.session_state["compare_reader"])
+            return
     a, b, c, d = st.columns(4)
     a.metric("Channels", len(card.channels))
     b.metric("Process columns", len(card.parsed.keyline))

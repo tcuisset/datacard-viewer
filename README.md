@@ -30,6 +30,23 @@ Use `--mass 125` for `$MASS` and repeat `--keyword NAME=value` for extra substit
 The UI accepts the same mappings/keywords, one per line. Built-in keywords cannot
 be overridden. Input files are never rewritten.
 
+To compare the original combined card with an optimizer output, pass the second
+card and its own shape-file mappings. The original card uses `output/` references;
+the optimized card points to `optimized.root` beside it:
+
+```bash
+uv run --locked --no-dev streamlit run app.py -- \
+  --card dPhijj_datacards/combined_allfs_dPhijj_v8.0.txt \
+  --path-map 'output/=' \
+  --compare-card dPhijj_datacards/optimized.txt
+```
+
+The command also works with historical `optimized.txt` cards or output from another
+optimizer. Choose **Compare** after opening both cards. **Card edits** lists nuisance
+text changes and `shape?` entries for ROOT inspection; **All effects** lets you inspect
+any exact-name nuisance in both cards. The shortlist is based on datacard text, so a
+retained shape nuisance can still have different ROOT templates.
+
 ### Remote machines
 
 Run the same command on the machine storing your cards, then forward its port:

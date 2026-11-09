@@ -46,3 +46,24 @@ parsing ROOT key lists. Re-running timings on other cards/storage is advised.
 - Browser inspection exercised two, three, and four channels, including a jet-scale
   nuisance with summed backgrounds. Channel headers and repeated physical ticks
   are visible in both aligned panels; curve/band segments remain separated.
+
+## Before-and-after comparison — 9 November 2026
+
+- The full suite passes: 27 cases, with 2 skipped; `ruff check .` and
+  `git diff --check` pass.
+- Small ROOT fixtures cover retained shape templates with changed contents,
+  symmetric and asymmetric `lnN`, shape-to-`lnN` `shape?` conversion, changed
+  log-normal factors, dropped effects, added/removed processes, unequal-factor
+  process sums, and a missing variation endpoint labeled with card and channel.
+- The supplied 88-channel `combined_allfs_dPhijj_v8.0.txt` and `optimized.txt`
+  parse to 88 exact-name common channels. Cold parsing both cards took 1.33
+  seconds; shortlist generation took 0.09 seconds. Both readers still had zero
+  open ROOT files after shortlist generation.
+- A warm one-channel/one-process selection took 0.30 seconds for
+  `tautau_comb_lowtaupt_dphijj_01j/ZTT/CMS_HIG25019_DY_pTweight_10_2022`.
+  It opened one file per card and cached three requested templates Before and
+  one nominal template After (the optimized `shape?` entry has neither endpoint
+  for this pair, so the documented log-normal fallback applies).
+- The supplied standalone single-channel card parses successfully. It has no
+  exact-name channel in the 88-channel combined output, so that pair cannot be
+  plotted as a single-card/combined-card comparison.
