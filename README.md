@@ -131,9 +131,12 @@ Process sums add variances in quadrature, assuming independent process templates
 Unaffected processes remain nominal in varied sums. Raw histogram normalization is
 preserved: datacard rate mismatches are warned about, and `rate -1` derives its yield
 from the histogram. Underflow/overflow are excluded from integrals and plots, with
-nonzero contents reported. Negative bins remain visible. Zero denominators have
-masked ratios and red markers. Incompatible binning or missing variations produce
-an explicit error rather than a partial sum.
+nonzero contents reported. Negative bins remain visible on a linear y-axis; on a
+log y-axis, zero and negative template bins appear as gaps, with their counts
+reported above the plot. The table and CSV retain the raw values. Statistical bands
+are shown only where the full interval is positive on a log y-axis. Zero
+denominators have masked ratios and red markers. Incompatible binning or missing
+variations produce an explicit error rather than a partial sum.
 
 Non-unit shape coefficients are displayed, but plotted curves remain stored
 endpoints rather than effective ±1σ predictions. `shape?` uses the documented

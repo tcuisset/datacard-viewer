@@ -361,15 +361,28 @@ def inspect_shapes(
         )
         if shown:
             plotted = plotted_channels(comparisons, normalize, shown)
-            if log_y and any(
-                (h.values <= 0).any()
-                for _, c in plotted
-                for h in (c.nominal, c.up, c.down)
-            ):
-                st.warning(
-                    "Log y disabled: plotted templates contain nonpositive bins."
-                )
-                log_y = False
+            if log_y:
+                masked = []
+                for ch, comparison in plotted:
+                    for label, template in zip(
+                        ("Nominal", "Up", "Down"),
+                        (comparison.nominal, comparison.up, comparison.down),
+                    ):
+                        zero = int((template.values == 0).sum())
+                        negative = int((template.values < 0).sum())
+                        if zero or negative:
+                            details = []
+                            if zero:
+                                details.append(f"{zero} zero")
+                            if negative:
+                                details.append(f"{negative} negative")
+                            masked.append(f"{ch} · {label}: {', '.join(details)}")
+                if masked:
+                    st.warning(
+                        "Log y is active; nonpositive bins are shown as gaps: "
+                        + "; ".join(masked)
+                        + ". Raw values remain available in the table and CSV export."
+                    )
             fig = channel_figure(plotted, variation_bands=bands, log_y=log_y)
             frame = channels_frame(plotted)
             st.plotly_chart(fig, width="stretch", key="shape_plot")

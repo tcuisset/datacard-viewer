@@ -71,11 +71,20 @@ def _draw_comparison(
     effect = _effect_label(c)
 
     def trace(values, name, color, row, band=None):
+        # Plotly's log axis cannot represent zero or negative values. Leave
+        # those bins as gaps rather than disabling log scale or flooring them.
+        if log_y and row == 1:
+            values = np.where(values > 0, values, np.nan)
         y = np.repeat(values, 2)
         if band is not None:
-            lower, upper = np.repeat(values - band, 2), np.repeat(values + band, 2)
+            lower_values, upper_values = values - band, values + band
             if log_y and row == 1:
-                lower = np.where(lower > 0, lower, np.nan)
+                # A band crossing zero cannot be represented faithfully on a
+                # log axis, so omit the whole band for that bin.
+                valid_band = (lower_values > 0) & (upper_values > 0)
+                lower_values = np.where(valid_band, lower_values, np.nan)
+                upper_values = np.where(valid_band, upper_values, np.nan)
+            lower, upper = np.repeat(lower_values, 2), np.repeat(upper_values, 2)
             fig.add_trace(
                 go.Scatter(
                     x=x,
