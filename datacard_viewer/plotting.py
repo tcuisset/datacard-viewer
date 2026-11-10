@@ -63,6 +63,7 @@ def _draw_comparison(
     channel=None,
     showlegend=True,
     variation_bands=False,
+    unsmoothed=None,
 ):
     edges = c.nominal.edges
     # Explicit pairs of edges retain true bin widths and gaps at masked bins.
@@ -70,7 +71,7 @@ def _draw_comparison(
     custom = np.repeat(np.column_stack((edges[:-1], edges[1:])), 2, axis=0)
     effect = _effect_label(c)
 
-    def trace(values, name, color, row, band=None):
+    def trace(values, name, color, row, band=None, *, smoothed=False, original=False):
         # Plotly's log axis cannot represent zero or negative values. Leave
         # those bins as gaps rather than disabling log scale or flooring them.
         if log_y and row == 1:
@@ -113,19 +114,28 @@ def _draw_comparison(
                 row=row,
                 col=1,
             )
+        label = name
+        if original:
+            label += " (unsmoothed)"
+        elif smoothed:
+            label += " (smoothed)"
         fig.add_trace(
             go.Scatter(
                 x=x,
                 y=y,
                 mode="lines",
-                name=name,
-                line=dict(color=color, width=2),
-                legendgroup=name,
-                showlegend=showlegend and row == 1,
+                name=label,
+                line=dict(
+                    color=color, width=1.25 if original else 2,
+                    dash="dash" if original else "solid",
+                ),
+                opacity=0.65 if original else 1.0,
+                legendgroup=label if original else name,
+                showlegend=showlegend and (row == 1 or original),
                 connectgaps=False,
                 customdata=custom,
                 hovertemplate=(html.escape(channel) + "<br>" if channel else "")
-                + name
+                + label
                 + (f"<br>{effect}" if row == 2 and name in ("Up", "Down") and effect else "")
                 + "<br>bin=[%{customdata[0]:g}, %{customdata[1]:g}]<br>value=%{y:.6g}<extra></extra>",
             ),
@@ -152,8 +162,11 @@ def _draw_comparison(
         2,
         ratios(np.sqrt(c.nominal.variances), np.abs(n)),
     )
-    for h, name, color in zip([c.up, c.down], ["Up", "Down"], colors[1:]):
-        trace(ratios(h.values, n), name, color, 2)
+    if unsmoothed is not None:
+        for h, name, color in zip((unsmoothed.up, unsmoothed.down), ("Up", "Down"), colors[1:]):
+            trace(ratios(h.values, n), name, color, 2, original=True)
+    for h, name, color in zip((c.up, c.down), ("Up", "Down"), colors[1:]):
+        trace(ratios(h.values, n), name, color, 2, smoothed=unsmoothed is not None)
     _ratio_label(fig, (edges[0] + edges[-1]) / 2 + offset, effect)
     if np.any(n == 0):
         centers = (edges[:-1] + edges[1:]) / 2
@@ -240,14 +253,19 @@ def channel_segments(comparisons):
 
 
 def channel_figure(
-    comparisons, remove_normalization=False, variation_bands=False, log_y=False
+    comparisons, remove_normalization=False, variation_bands=False, log_y=False,
+    *,
+    unsmoothed=None,
 ):
     displayed = display_channels(comparisons, remove_normalization)
+    originals = dict(display_channels(unsmoothed, remove_normalization)) if unsmoothed else {}
     fig = _base_figure(log_y)
     tickvals, ticktext = [], []
     previous_end = None
     for i, (name, c, offset) in enumerate(channel_segments(displayed)):
-        _draw_comparison(fig, c, log_y, offset, name, i == 0, variation_bands)
+        _draw_comparison(
+            fig, c, log_y, offset, name, i == 0, variation_bands, originals.get(name)
+        )
         edges = c.nominal.edges
         ticks = np.linspace(edges[0], edges[-1], 5)
         tickvals.extend(ticks + offset)
@@ -292,7 +310,7 @@ def channel_figure(
         height=690,
         legend=dict(orientation="h", y=1.17, yanchor="top"),
     )
-    _set_ratio_range(fig, [c for _, c in displayed])
+    _set_ratio_range(fig, [c for _, c in displayed] + list(originals.values()))
     return fig
 
 
@@ -311,9 +329,16 @@ def channels_frame(comparisons, remove_normalization=False):
     return pd.concat(frames, ignore_index=True)
 
 
-def compare_figure(before, after, remove_normalization=False, log_y=False):
+def compare_figure(
+    before, after, remove_normalization=False, log_y=False,
+    *,
+    before_unsmoothed=None,
+    after_unsmoothed=None,
+):
     """Overlay two card predictions. Returns (figure, binning_matches)."""
     before, after = list(before), list(after)
+    before_unsmoothed = list(before_unsmoothed or ())
+    after_unsmoothed = list(after_unsmoothed or ())
     if [n for n, _ in before] != [n for n, _ in after]:
         raise ValueError("Before and After channel selections must match")
     matches = all(
@@ -326,25 +351,34 @@ def compare_figure(before, after, remove_normalization=False, log_y=False):
     if remove_normalization:
         all_totals = [
             sum(getattr(c, field).integral for _, c in items)
-            for items in (before, after)
+            for items in (before, after, before_unsmoothed, after_unsmoothed)
+            if items
             for field in ("nominal", "up", "down")
         ]
         if min(all_totals) <= 0:
             remove_normalization = False
     before = display_channels(before, remove_normalization)
     after = display_channels(after, remove_normalization)
+    before_original = (
+        dict(display_channels(before_unsmoothed, remove_normalization)) if before_unsmoothed else {}
+    )
+    after_original = (
+        dict(display_channels(after_unsmoothed, remove_normalization)) if after_unsmoothed else {}
+    )
     fig = _base_figure(log_y)
     direction = {"Nominal": "rgb(55,65,80)", "Up": "rgb(30,125,185)", "Down": "rgb(220,100,40)"}
     gap = 0.1 * max(c.nominal.edges[-1] - c.nominal.edges[0] for _, c in before)
     cursor = before[0][1].nominal.edges[0]
-    ratio_low = ratio_high = 1.0
     for channel_index, ((channel, b), (_, a)) in enumerate(zip(before, after)):
         offset = cursor - b.nominal.edges[0]
         edges = b.nominal.edges
         x = np.column_stack((edges[:-1], edges[1:])).ravel() + offset
         custom = np.repeat(np.column_stack((edges[:-1], edges[1:])), 2, axis=0)
         effect_labels = []
-        for side, comparison, dash in (("Before", b, "dash"), ("After", a, "solid")):
+        for side, comparison, original, dash in (
+            ("Before", b, before_original.get(channel), "dash"),
+            ("After", a, after_original.get(channel), "solid"),
+        ):
             effect = _effect_label(comparison)
             if effect:
                 effect_labels.append(f"{side} · <b>{effect}</b>")
@@ -352,19 +386,42 @@ def compare_figure(before, after, remove_normalization=False, log_y=False):
             for name, template in zip(("Nominal", "Up", "Down"), (comparison.nominal, comparison.up, comparison.down)):
                 label = f"{side} {name}"
                 fig.add_trace(go.Scatter(x=x, y=np.repeat(template.values, 2), mode="lines", name=label, legendgroup=label, showlegend=channel_index == 0, connectgaps=False, customdata=custom, line=dict(color=direction[name], dash=dash, width=2), hovertemplate=f"{html.escape(channel)}<br>{label}<br>bin=[%{{customdata[0]:g}}, %{{customdata[1]:g}}]<br>value=%{{y:.6g}}<extra></extra>"), row=1, col=1)
-            for name, template in (("Up", comparison.up), ("Down", comparison.down)):
-                values = ratios(template.values, comparison.nominal.values)
-                finite = values[np.isfinite(values)]
-                if finite.size:
-                    ratio_low, ratio_high = min(ratio_low, float(finite.min())), max(ratio_high, float(finite.max()))
-                label = f"{side} {name} / nominal"
-                fig.add_trace(go.Scatter(x=x, y=np.repeat(values, 2), mode="lines", name=label, legendgroup=f"{side} {name}", showlegend=channel_index == 0, connectgaps=False, customdata=custom, line=dict(color=direction[name], dash=dash, width=2), hovertemplate=f"{html.escape(channel)}<br>{label}{effect_hover}<br>bin=[%{{customdata[0]:g}}, %{{customdata[1]:g}}]<br>ratio=%{{y:.6g}}<extra></extra>"), row=2, col=1)
+            ratio_curves = [(comparison, False)]
+            if original is not None:
+                ratio_curves.insert(0, (original, True))
+            for curve, is_original in ratio_curves:
+                suffix = ""
+                ratio_dash = dash
+                if is_original:
+                    suffix = " (unsmoothed)"
+                    ratio_dash = "dot" if dash == "dash" else "dashdot"
+                elif original is not None:
+                    suffix = " (smoothed)"
+                for name, template in (("Up", curve.up), ("Down", curve.down)):
+                    values = ratios(template.values, curve.nominal.values)
+                    label = f"{side} {name} / nominal{suffix}"
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x, y=np.repeat(values, 2), mode="lines", name=label,
+                            legendgroup=label if is_original else f"{side} {name}",
+                            showlegend=channel_index == 0, connectgaps=False,
+                            customdata=custom, opacity=0.65 if is_original else 1.0,
+                            line=dict(
+                                color=direction[name], dash=ratio_dash,
+                                width=1.25 if is_original else 2,
+                            ),
+                            hovertemplate=f"{html.escape(channel)}<br>{label}{effect_hover}<br>bin=[%{{customdata[0]:g}}, %{{customdata[1]:g}}]<br>ratio=%{{y:.6g}}<extra></extra>",
+                        ),
+                        row=2, col=1,
+                    )
         center = (edges[0] + edges[-1]) / 2 + offset
         fig.add_annotation(x=center, y=1.02, xref="x", yref="paper", text=html.escape(channel), showarrow=False, yanchor="bottom", font=dict(size=11))
         _ratio_label(fig, center, "<br>".join(effect_labels))
         cursor += edges[-1] - edges[0] + gap
-    padding = 0.1 * (ratio_high - ratio_low) if ratio_high > ratio_low else 0.01
-    fig.update_yaxes(range=[ratio_low - padding, ratio_high + padding], autorange=False, row=2, col=1)
+    plotted_ratios = [c for _, c in (*before, *after)]
+    plotted_ratios.extend(before_original.values())
+    plotted_ratios.extend(after_original.values())
+    _set_ratio_range(fig, plotted_ratios)
     fig.update_layout(height=690, margin=dict(l=55, r=25, t=115, b=45), legend=dict(orientation="h", y=1.17, yanchor="top"))
     return fig, True
 

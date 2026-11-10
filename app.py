@@ -303,6 +303,10 @@ def visible_channels(comparisons, hide_unaffected, after=()):
     return shown
 
 
+def smooth_channels(comparisons, passes):
+    return [(ch, c.smoothed(passes)) for ch, c in comparisons]
+
+
 def plotted_channels(comparisons, normalize, shown):
     # Normalize the full selection before hiding channels to preserve plotted values.
     return [
@@ -311,7 +315,16 @@ def plotted_channels(comparisons, normalize, shown):
 
 
 def inspect_shapes(
-    card, reader, channels, selected, nuisance, normalize, log_y, bands, hide_unaffected
+    card,
+    reader,
+    channels,
+    selected,
+    nuisance,
+    normalize,
+    log_y,
+    bands,
+    hide_unaffected,
+    smoothing_passes,
 ):
     processes = processes_by_channel(card, channels, selected)
     try:
@@ -360,7 +373,11 @@ def inspect_shapes(
             f"{(d / n - 1) * 100:+.3g}%" if n else None,
         )
         if shown:
-            plotted = plotted_channels(comparisons, normalize, shown)
+            plot_inputs = smooth_channels(comparisons, smoothing_passes)
+            plotted = plotted_channels(plot_inputs, normalize, shown)
+            unsmoothed = (
+                plotted_channels(comparisons, normalize, shown) if smoothing_passes else None
+            )
             if log_y:
                 masked = []
                 for ch, comparison in plotted:
@@ -381,9 +398,11 @@ def inspect_shapes(
                     st.warning(
                         "Log y is active; nonpositive bins are shown as gaps: "
                         + "; ".join(masked)
-                        + ". Raw values remain available in the table and CSV export."
+                        + ". The table and CSV export include those bin values."
                     )
-            fig = channel_figure(plotted, variation_bands=bands, log_y=log_y)
+            fig = channel_figure(
+                plotted, variation_bands=bands, log_y=log_y, unsmoothed=unsmoothed
+            )
             frame = channels_frame(plotted)
             st.plotly_chart(fig, width="stretch", key="shape_plot")
             st.caption(
@@ -416,6 +435,10 @@ def inspect_shapes(
         )
         if shown:
             frame = frame.assign(nuisance=nuisance, normalized=normalize)
+            smoothing_label = ""
+            if smoothing_passes:
+                frame["smoothing_passes"] = smoothing_passes
+                smoothing_label = f" · ROOT ratio smoothing passes: {smoothing_passes}"
             frame["processes"] = frame.channel.map(lambda ch: " + ".join(processes[ch]))
             a, b = st.columns(2)
             a.download_button(
@@ -429,7 +452,7 @@ def inspect_shapes(
                 "Download interactive plot (HTML)",
                 fig.to_html(include_plotlyjs=True).replace(
                     "<body>",
-                    f"<body><h2>{html.escape(nuisance)}</h2><p>{html.escape(plotted_names)} · {html.escape(' + '.join(selected))} · normalization removed: {normalize}</p>",
+                    f"<body><h2>{html.escape(nuisance)}</h2><p>{html.escape(plotted_names)} · {html.escape(' + '.join(selected))} · normalization removed: {normalize}{smoothing_label}</p>",
                 ),
                 "shape_plot.html",
                 "text/html",
@@ -461,6 +484,7 @@ def compare_shapes(
     normalize,
     log_y,
     hide_unaffected,
+    smoothing_passes,
 ):
     before, after = before_reader.card, after_reader.card
     b_processes = processes_by_channel(before, channels, selected)
@@ -491,19 +515,34 @@ def compare_shapes(
                         st.warning(warning)
         shown = visible_channels(before_comparisons, hide_unaffected, after_comparisons)
         if shown:
+            before_inputs = smooth_channels(before_comparisons, smoothing_passes)
+            after_inputs = smooth_channels(after_comparisons, smoothing_passes)
+            normalized_groups = [before_inputs, after_inputs]
+            if smoothing_passes:
+                normalized_groups.extend((before_comparisons, after_comparisons))
             plot_totals = [
                 sum(getattr(c, field).integral for _, c in items)
-                for items in (before_comparisons, after_comparisons)
+                for items in normalized_groups
                 for field in ("nominal", "up", "down")
             ]
             if normalize and min(plot_totals) <= 0:
                 st.warning(
-                    "Normalization removal requires positive nominal, Up, and Down totals in both cards. Showing raw plots."
+                    "Normalization removal requires positive nominal, Up, and Down totals in both cards. Showing plots without normalization removal."
                 )
                 normalize = False
-            before_plot = plotted_channels(before_comparisons, normalize, shown)
-            after_plot = plotted_channels(after_comparisons, normalize, shown)
-            fig, same_binning = compare_figure(before_plot, after_plot, log_y=log_y)
+            before_plot = plotted_channels(before_inputs, normalize, shown)
+            after_plot = plotted_channels(after_inputs, normalize, shown)
+            before_original = after_original = None
+            if smoothing_passes:
+                before_original = plotted_channels(before_comparisons, normalize, shown)
+                after_original = plotted_channels(after_comparisons, normalize, shown)
+            fig, same_binning = compare_figure(
+                before_plot,
+                after_plot,
+                log_y=log_y,
+                before_unsmoothed=before_original,
+                after_unsmoothed=after_original,
+            )
             if same_binning:
                 st.plotly_chart(fig, width="stretch", key="compare_shape_plot")
             else:
@@ -514,12 +553,12 @@ def compare_shapes(
                 a.markdown("**Before**")
                 b.markdown("**After**")
                 a.plotly_chart(
-                    channel_figure(before_plot, log_y=log_y),
+                    channel_figure(before_plot, log_y=log_y, unsmoothed=before_original),
                     width="stretch",
                     key="compare_before_plot",
                 )
                 b.plotly_chart(
-                    channel_figure(after_plot, log_y=log_y),
+                    channel_figure(after_plot, log_y=log_y, unsmoothed=after_original),
                     width="stretch",
                     key="compare_after_plot",
                 )
@@ -631,6 +670,16 @@ def viewer(reader, threshold, after_reader=None):
         with st.expander("Plot options"):
             normalize = st.checkbox("Remove normalization effect")
             log_y = st.checkbox("Logarithmic y-axis")
+            smoothing_passes = st.number_input(
+                "ROOT smoothing passes",
+                min_value=0,
+                value=0,
+                step=1,
+                help="0 disables smoothing. Applies ROOT's TH1::SmoothArray to Up / Nominal "
+                "and Down / Nominal separately in each channel. Zero nominal bins split "
+                "the ratios into separate segments. Smoothing requires at least three "
+                "bins per segment.",
+            )
             bands = (
                 st.checkbox("Show Up/Down statistical bands") if not after else False
             )
@@ -667,6 +716,12 @@ def viewer(reader, threshold, after_reader=None):
             )
             kind = f" · {before.nuisances[nuisance]}" if not after else ""
             st.caption(f"{channel_label} · {process_label}{kind}")
+            if smoothing_passes:
+                st.caption(
+                    f"Ratio smoothing passes: {smoothing_passes}. The ratio panel overlays "
+                    "the unsmoothed ratios. Yield summaries and channel filtering use "
+                    "the original templates."
+                )
             if after:
                 compare_shapes(
                     reader,
@@ -677,6 +732,7 @@ def viewer(reader, threshold, after_reader=None):
                     normalize,
                     log_y,
                     hide_unaffected,
+                    smoothing_passes,
                 )
             else:
                 inspect_shapes(
@@ -689,6 +745,7 @@ def viewer(reader, threshold, after_reader=None):
                     log_y,
                     bands,
                     hide_unaffected,
+                    smoothing_passes,
                 )
         if after:
             comparison_differences(before, after, channels, shortlist)

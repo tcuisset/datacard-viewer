@@ -92,6 +92,18 @@ Compare keeps a channel when either card shows a change. Normalization, yield
 summaries, and scans still use the full channel selection. Plot downloads reflect
 the visible channels.
 
+Set **ROOT smoothing passes** under **Plot options** to apply ROOT's
+`TH1::SmoothArray` algorithm in either mode. The default of zero disables
+smoothing. The viewer smooths **Up / Nominal** and **Down / Nominal** separately
+within each channel and card, then multiplies the ratios by the original
+nominal to recover the plotted variation yields. When smoothing is enabled, the
+ratio panel overlays the unsmoothed ratios. Zero nominal bins keep their
+original variation yields and split the ratio into separate segments. Smoothing
+requires at least three bins per segment. When normalization removal is enabled,
+the smoothed and unsmoothed curves are normalized separately. Statistical bands
+use stored bin errors, scaled if plot normalization is enabled. Yield summaries, diagnostics,
+unaffected-channel filtering, and scans use the original templates.
+
 ## Inspect shapes
 
 Each channel occupies a separate segment in both panels, with its own physical

@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import uproot
 
+from .smoothing import smooth_array
 from .vendor.DatacardParser import addDatacardParserOptions, parseCard
 
 
@@ -366,6 +367,32 @@ class Comparison:
             self,
             up=self.up.scaled(self.nominal.integral / self.up.integral),
             down=self.down.scaled(self.nominal.integral / self.down.integral),
+        )
+
+    def smoothed(self, ntimes):
+        """Smooth this channel's variation ratios while retaining stored variances."""
+        if ntimes <= 0 or self.nominal.values.size < 3:
+            return self
+
+        def smooth_variation(template):
+            nominal = self.nominal.values
+            relative_values = ratios(template.values, nominal)
+            finite = np.isfinite(relative_values)
+            boundaries = np.flatnonzero(np.diff(finite, prepend=False, append=False))
+            values = template.values.copy()
+            # Treat undefined ratios as gaps. Preserve their original yields.
+            for start, stop in boundaries.reshape(-1, 2):
+                if stop - start >= 3:
+                    segment = slice(start, stop)
+                    values[segment] = (
+                        smooth_array(relative_values[segment], ntimes) * nominal[segment]
+                    )
+            return replace(template, values=values)
+
+        return replace(
+            self,
+            up=smooth_variation(self.up),
+            down=smooth_variation(self.down),
         )
 
 

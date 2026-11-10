@@ -1,5 +1,6 @@
 """Multi-channel coordinates, shared normalization, and selection workflow."""
 
+import base64
 import json
 import sys
 from pathlib import Path
@@ -128,6 +129,94 @@ def app(path, monkeypatch, after=None):
         argv += ["--compare-card", str(after)]
     monkeypatch.setattr(sys, "argv", argv)
     return AppTest.from_file(Path("app.py").resolve(), default_timeout=10).run()
+
+
+@pytest.mark.parametrize("compare_mode", [False, True], ids=["inspect", "compare"])
+def test_root_smoothing_is_per_channel(multi_card, monkeypatch, compare_mode):
+    path, root = multi_card
+    first = [3, 12, 4, 0, 1, 3, 7]
+    second = [100, 130, 110, 140, 125, 120, 115]
+    up = [1, 1, 5, 5, 5, 3, 3]
+    down = [9, 9, 0, 0, 0, 3, 3]
+    edges = np.arange(8, dtype=float)
+    with uproot.update(root) as f:
+        for key, values in (
+            ("one/b", first),
+            ("one/b_normUp", up),
+            ("one/b_normDown", down),
+            ("two/b", second),
+        ):
+            f[key] = (np.asarray(values, dtype=float), edges)
+
+    after = None
+    if compare_mode:
+        after = path.with_name("after.txt")
+        after.write_text(path.read_text().replace("norm shape 1", "norm shape 0.5"))
+
+    at = app(path, monkeypatch, after)
+    at.multiselect(key="channels").set_value(["one", "two"]).run()
+    at.multiselect(key="processes").set_value(["b"]).run()
+    if compare_mode:
+        at.selectbox(key="compare_nuisance").set_value("norm").run()
+
+    def plot_spec():
+        assert not at.exception and not at.error
+        (plot,) = at.get("plotly_chart")
+        return json.loads(plot.proto.spec)
+
+    def plotted_values(name, axis="x"):
+        encoded = [
+            trace["y"] for trace in plot_spec()["data"]
+            if trace.get("name") == name and trace.get("xaxis") == axis
+        ]
+        return [
+            np.frombuffer(base64.b64decode(y["bdata"]), dtype=y["dtype"])[::2]
+            for y in encoded
+        ]
+
+    sides = ("Before ", "After ") if compare_mode else ("",)
+    np.testing.assert_array_equal(plotted_values(sides[0] + "Nominal"), [first, second])
+    assert all("unsmoothed" not in trace.get("name", "") for trace in plot_spec()["data"])
+    next(n for n in at.number_input if n.label == "ROOT smoothing passes").set_value(2).run()
+
+    # Reference values from two passes of the supplied C++ algorithm.
+    # The zero nominal bin separates two three-bin segments. Its yield is retained.
+    expected_up = [1, 4, 4 / 3, 5, 15 / 7, 51 / 14, 3]
+    expected_down = [6.75, 12.375, 0, 0, 3 / 7, 9 / 7, 3]
+    for side in sides:
+        np.testing.assert_array_equal(plotted_values(side + "Nominal"), [first, second])
+        np.testing.assert_allclose(plotted_values(side + "Up"), [expected_up, second])
+        np.testing.assert_allclose(plotted_values(side + "Down"), [expected_down, second])
+        for name, raw, smooth in (("Up", up, expected_up), ("Down", down, expected_down)):
+            label = side + name + (" / nominal" if compare_mode else "")
+            denominator = np.where(np.array(first) == 0, np.nan, first)
+            assert not plotted_values(label + " (unsmoothed)")
+            np.testing.assert_allclose(
+                plotted_values(label + " (unsmoothed)", "x2")[0], raw / denominator
+            )
+            np.testing.assert_allclose(
+                plotted_values(label + " (smoothed)", "x2")[0], smooth / denominator
+            )
+    assert plot_spec()["layout"]["yaxis2"]["range"][1] > 5
+    summary = at.dataframe[0].value
+    assert summary.nominal.tolist() == [sum(first), sum(second)] * (2 if compare_mode else 1)
+    if not compare_mode:
+        bins = at.dataframe[1].value
+        np.testing.assert_array_equal(bins.nominal, first + second)
+        np.testing.assert_allclose(bins.up_over_nominal.iloc[:7], [
+            1 / 3, 1 / 3, 1 / 3, np.nan, 15 / 7, 17 / 14, 3 / 7,
+        ])
+        assert bins.smoothing_passes.eq(2).all()
+
+    next(c for c in at.checkbox if c.label == "Remove normalization effect").check().run()
+    nominal_total = sum(first) + sum(second)
+    up_label = sides[0] + ("Up / nominal" if compare_mode else "Up")
+    denominator = np.where(np.array(first) == 0, np.nan, first)
+    for suffix, values in (("unsmoothed", up), ("smoothed", expected_up)):
+        expected_ratio = values / denominator * (nominal_total / (sum(values) + sum(second)))
+        np.testing.assert_allclose(
+            plotted_values(f"{up_label} ({suffix})", "x2")[0], expected_ratio
+        )
 
 
 def test_multi_channel_ui_order_unaffected_scans_and_process_presets(
