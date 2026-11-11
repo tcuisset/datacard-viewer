@@ -254,19 +254,29 @@ class Reader:
             result = self.arrays.pop(cache_key)
             self.arrays[cache_key] = result
             return result
-        directory, _, leaf = key.rpartition("/")
-        if directory:
-            directory_key = (str(path), revision, directory)
-            if directory_key in self.directories:
-                parent = self.directories.pop(directory_key)
+        try:
+            directory, _, leaf = key.rpartition("/")
+            if directory:
+                directory_key = (str(path), revision, directory)
+                if directory_key in self.directories:
+                    parent = self.directories.pop(directory_key)
+                else:
+                    parent = handle[directory]
+                self.directories[directory_key] = parent
+                while len(self.directories) > 64:
+                    self.directories.popitem(last=False)
+                h = parent[leaf]
             else:
-                parent = handle[directory]
-            self.directories[directory_key] = parent
-            while len(self.directories) > 64:
-                self.directories.popitem(last=False)
-            h = parent[leaf]
-        else:
-            h = handle[key]
+                h = handle[key]
+        except uproot.exceptions.KeyInFileError as exc:
+            # Formatting uproot's exception ranks directory keys by edit
+            # distance. Long nuisance names and thousands of keys can spend
+            # minutes on suggestions, even for an expected shape? fallback.
+            # Convert at the I/O boundary so nominal/directory failures and
+            # scan errors also get a bounded, actionable diagnostic.
+            raise KeyError(
+                f"Missing ROOT object {path}:{key} (missing key {exc.key!r})"
+            ) from None
         if not h.classname.startswith("TH1") or len(h.axes) != 1:
             raise ValueError(
                 f"Expected one-dimensional TH1: {path}:{key} ({h.classname})"

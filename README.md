@@ -226,3 +226,9 @@ metadata entries per reader. The scan has its own reader, checks cancellation be
 pairs, retains scalar results, and closes its files when finished. Cards and files
 are tracked by resolved path, size, and nanosecond modification time; Reload also
 clears the card cache.
+
+Large-card regression tests cover 30-channel Compare redraws, crowded ROOT key
+lists, cache reuse, and plot-layout construction costs. See
+[the CPU investigation and optional real-card benchmark](PERFORMANCE.md) for
+measurements and instructions. Missing-key diagnostics include the requested file
+and object path without computing expensive spelling suggestions.

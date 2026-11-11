@@ -45,14 +45,18 @@ def _effect_label(comparison):
     return "Shape" if "shape" in types else "Log-normal (lnN)"
 
 
-def _ratio_label(fig, x, text):
+def _ratio_label(fig, x, text, annotations=None):
     if text:
-        fig.add_annotation(
+        annotation = dict(
             x=x, xref="x2", y=1, yref="y2 domain",
             text=text, showarrow=False, yanchor="bottom", yshift=2, align="left",
             font=dict(size=11, color="#364152"),
             bgcolor="rgba(255,255,255,0.9)",
         )
+        if annotations is None:
+            fig.add_annotation(annotation)
+        else:
+            annotations.append(annotation)
 
 
 def _draw_comparison(
@@ -64,6 +68,7 @@ def _draw_comparison(
     showlegend=True,
     variation_bands=False,
     unsmoothed=None,
+    annotations=None,
 ):
     edges = c.nominal.edges
     # Explicit pairs of edges retain true bin widths and gaps at masked bins.
@@ -167,7 +172,7 @@ def _draw_comparison(
             trace(ratios(h.values, n), name, color, 2, original=True)
     for h, name, color in zip((c.up, c.down), ("Up", "Down"), colors[1:]):
         trace(ratios(h.values, n), name, color, 2, smoothed=unsmoothed is not None)
-    _ratio_label(fig, (edges[0] + edges[-1]) / 2 + offset, effect)
+    _ratio_label(fig, (edges[0] + edges[-1]) / 2 + offset, effect, annotations)
     if np.any(n == 0):
         centers = (edges[:-1] + edges[1:]) / 2
         fig.add_trace(
@@ -260,11 +265,13 @@ def channel_figure(
     displayed = display_channels(comparisons, remove_normalization)
     originals = dict(display_channels(unsmoothed, remove_normalization)) if unsmoothed else {}
     fig = _base_figure(log_y)
+    annotations, shapes = [], []
     tickvals, ticktext = [], []
     previous_end = None
     for i, (name, c, offset) in enumerate(channel_segments(displayed)):
         _draw_comparison(
-            fig, c, log_y, offset, name, i == 0, variation_bands, originals.get(name)
+            fig, c, log_y, offset, name, i == 0, variation_bands, originals.get(name),
+            annotations,
         )
         edges = c.nominal.edges
         ticks = np.linspace(edges[0], edges[-1], 5)
@@ -276,7 +283,7 @@ def channel_figure(
                 name, width=max(12, min(30, 80 // len(displayed)))
             )
         )
-        fig.add_annotation(
+        annotations.append(dict(
             x=(edges[0] + edges[-1]) / 2 + offset,
             y=1.02,
             xref="x",
@@ -285,18 +292,15 @@ def channel_figure(
             showarrow=False,
             yanchor="bottom",
             font=dict(size=11),
-        )
+        ))
         if previous_end is not None:
             boundary = (previous_end + edges[0] + offset) / 2
-            for row in (1, 2):
-                fig.add_vline(
-                    x=boundary,
-                    line_width=1,
-                    line_dash="dot",
-                    line_color="#8899aa",
-                    row=row,
-                    col=1,
-                )
+            for xref, yref in (("x", "y domain"), ("x2", "y2 domain")):
+                shapes.append(dict(
+                    type="line", x0=boundary, x1=boundary, y0=0, y1=1,
+                    xref=xref, yref=yref,
+                    line=dict(width=1, dash="dot", color="#8899aa"),
+                ))
         previous_end = edges[-1] + offset
     fig.update_xaxes(
         tickmode="array",
@@ -306,6 +310,9 @@ def channel_figure(
         tickfont=dict(size=10),
     )
     fig.update_layout(
+        # Assign once: Plotly's add_annotation/add_vline repeatedly validate
+        # all previous layout entries, making many-channel redraws quadratic.
+        annotations=annotations, shapes=shapes,
         margin=dict(l=55, r=25, t=115, b=45),
         height=690,
         legend=dict(orientation="h", y=1.17, yanchor="top"),
@@ -366,6 +373,7 @@ def compare_figure(
         dict(display_channels(after_unsmoothed, remove_normalization)) if after_unsmoothed else {}
     )
     fig = _base_figure(log_y)
+    annotations = []
     direction = {"Nominal": "rgb(55,65,80)", "Up": "rgb(30,125,185)", "Down": "rgb(220,100,40)"}
     gap = 0.1 * max(c.nominal.edges[-1] - c.nominal.edges[0] for _, c in before)
     cursor = before[0][1].nominal.edges[0]
@@ -415,14 +423,14 @@ def compare_figure(
                         row=2, col=1,
                     )
         center = (edges[0] + edges[-1]) / 2 + offset
-        fig.add_annotation(x=center, y=1.02, xref="x", yref="paper", text=html.escape(channel), showarrow=False, yanchor="bottom", font=dict(size=11))
-        _ratio_label(fig, center, "<br>".join(effect_labels))
+        annotations.append(dict(x=center, y=1.02, xref="x", yref="paper", text=html.escape(channel), showarrow=False, yanchor="bottom", font=dict(size=11)))
+        _ratio_label(fig, center, "<br>".join(effect_labels), annotations)
         cursor += edges[-1] - edges[0] + gap
     plotted_ratios = [c for _, c in (*before, *after)]
     plotted_ratios.extend(before_original.values())
     plotted_ratios.extend(after_original.values())
     _set_ratio_range(fig, plotted_ratios)
-    fig.update_layout(height=690, margin=dict(l=55, r=25, t=115, b=45), legend=dict(orientation="h", y=1.17, yanchor="top"))
+    fig.update_layout(annotations=annotations, height=690, margin=dict(l=55, r=25, t=115, b=45), legend=dict(orientation="h", y=1.17, yanchor="top"))
     return fig, True
 
 
