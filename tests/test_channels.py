@@ -128,7 +128,7 @@ def app(path, monkeypatch, after=None):
     if after:
         argv += ["--compare-card", str(after)]
     monkeypatch.setattr(sys, "argv", argv)
-    return AppTest.from_file(Path("app.py").resolve(), default_timeout=10).run()
+    return AppTest.from_file(Path("datacard_viewer/app.py").resolve(), default_timeout=10).run()
 
 
 @pytest.mark.parametrize("compare_mode", [False, True], ids=["inspect", "compare"])

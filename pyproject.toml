@@ -1,7 +1,12 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
 [project]
 name = "datacard-viewer"
 version = "0.1.0"
 description = "Inspect Combine datacards and ROOT systematic templates"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26",
@@ -10,6 +15,12 @@ dependencies = [
     "plotly>=6,<7",
     "pandas>=2.2,<4",
 ]
+
+[project.scripts]
+view-card = "datacard_viewer.cli:main"
+
+[tool.hatch.build.targets.sdist]
+include = ["/datacard_viewer", "/tests", "/README.md", "/pyproject.toml", "/uv.lock", "/.streamlit"]
 
 [dependency-groups]
 dev = ["pytest>=8", "hist>=2.8", "ruff>=0.11"]

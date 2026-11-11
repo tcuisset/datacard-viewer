@@ -198,7 +198,7 @@ def test_before_after_datacard_responses(tmp_path, monkeypatch):
     from streamlit.testing.v1 import AppTest
 
     monkeypatch.setattr(sys, "argv", ["app.py", "--card", str(before_path), "--compare-card", str(after_path)])
-    at = AppTest.from_file(Path("app.py").resolve(), default_timeout=15).run()
+    at = AppTest.from_file(Path("datacard_viewer/app.py").resolve(), default_timeout=15).run()
     assert not at.exception
     at.radio(key="viewer_mode").set_value("Compare").run()
     assert not at.exception
@@ -376,7 +376,7 @@ def test_streamlit_workflow(model, monkeypatch):
     from streamlit.testing.v1 import AppTest
 
     monkeypatch.setattr(sys, "argv", ["app.py", "--card", str(model[0])])
-    at = AppTest.from_file(Path("app.py").resolve(), default_timeout=10).run()
+    at = AppTest.from_file(Path("datacard_viewer/app.py").resolve(), default_timeout=10).run()
     assert not at.exception
     assert len(at.get("plotly_chart")) == 1
     next(b for b in at.button if b.label == "→").click().run()

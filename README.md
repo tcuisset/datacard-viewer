@@ -6,10 +6,22 @@ in `uv.lock`; no JavaScript build, database, or running Combine environment is n
 
 ## Run
 
-From this repository:
+Run directly from GitHub, without cloning the repository or managing an environment:
 
 ```bash
-uv run --locked --no-dev streamlit run app.py -- --card dPhijj_datacards/ElMu_2024_highDR_dPhijj_0_pio2_v8.0.txt
+uvx --from git+https://github.com/tcuisset/datacard-viewer.git view-card --card something.txt
+```
+
+All card options below also work with `view-card`, without an extra `--` separator.
+Relative card paths resolve from your current directory. `uvx` downloads the app and
+dependencies into its managed cache; it does not install them into your project.
+Use `view-card --help` after the `uvx --from ...` prefix to list options.
+To refresh a cached Git checkout, add `--refresh` to `uvx`.
+
+From a local checkout (`uv run` installs the package into its project environment):
+
+```bash
+uv run --locked --no-dev view-card --card something.txt
 ```
 
 Open http://localhost:8501. Use **Open / Reload** in the sidebar to change cards,
@@ -20,7 +32,7 @@ The combined example references an absent `output/` subdirectory. Map that prefi
 to the datacard directory explicitly:
 
 ```bash
-uv run --locked --no-dev streamlit run app.py -- --card dPhijj_datacards/combined_allfs_dPhijj_v8.0.txt --path-map 'output/='
+uv run --locked --no-dev view-card --card dPhijj_datacards/combined_allfs_dPhijj_v8.0.txt --path-map 'output/='
 ```
 
 Mappings use `prefix=replacement`; the first matching prefix wins. Relative results
@@ -35,7 +47,7 @@ card and its own shape-file mappings. The original card uses `output/` reference
 the optimized card points to `optimized.root` beside it:
 
 ```bash
-uv run --locked --no-dev streamlit run app.py -- \
+uv run --locked --no-dev view-card \
   --card dPhijj_datacards/combined_allfs_dPhijj_v8.0.txt \
   --path-map 'output/=' \
   --compare-card dPhijj_datacards/optimized.txt
@@ -65,6 +77,8 @@ ssh -N -L 8501:127.0.0.1:8501 user@remote-host
 
 Open http://localhost:8501 locally. The app binds to loopback by default. All plot
 assets are supplied locally; normal use needs no internet after dependency installation.
+For `view-card`, set `STREAMLIT_SERVER_PORT=8502` to change the port, or use
+other standard Streamlit environment variables to override server settings.
 
 ## Select shapes
 

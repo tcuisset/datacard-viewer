@@ -1,6 +1,5 @@
-"""Launch with: uv run streamlit run app.py -- --card path/to/card.txt"""
+"""Launch with: uv run view-card --card path/to/card.txt"""
 
-import argparse
 import html
 import time
 from collections import Counter
@@ -8,6 +7,7 @@ from collections import Counter
 import pandas as pd
 import streamlit as st
 
+from datacard_viewer.cli import card_parser
 from datacard_viewer.core import (
     Card,
     Reader,
@@ -32,14 +32,7 @@ st.set_page_config(page_title="Combine shape viewer", page_icon="📊", layout="
 
 
 def arguments():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--card", default="")
-    parser.add_argument("--path-map", action="append", default=[])
-    parser.add_argument("--compare-card", default="")
-    parser.add_argument("--compare-path-map", action="append", default=[])
-    parser.add_argument("--mass", type=float, default=125)
-    parser.add_argument("--keyword", action="append", default=[])
-    return parser.parse_known_args()[0]
+    return card_parser().parse_known_args()[0]
 
 
 @st.cache_resource(show_spinner="Parsing datacard…", max_entries=2)
