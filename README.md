@@ -96,6 +96,8 @@ Choose one or more **Processes** to sum. **Backgrounds**, **Signals**, and
 positive process IDs, and signals have zero or negative IDs. In Compare, a
 process name qualifies for a preset if either card classifies it that way.
 Processes absent from a selected channel or card contribute zero yield there.
+When exactly one process is selected, small arrows beside the picker step through
+the available processes, wrapping around at either end.
 
 Choose a **Nuisance** directly or step through the list with the arrows next to
 the picker. **Filter nuisances** narrows the list by datacard group or name.

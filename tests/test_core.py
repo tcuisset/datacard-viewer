@@ -205,7 +205,7 @@ def test_before_after_datacard_responses(tmp_path, monkeypatch):
     assert at.selectbox(key="compare_nuisance").value is None
     assert not at.session_state["reader"].files
     assert not at.session_state["compare_reader"].files
-    next(b for b in at.button if b.label == "→").click().run()
+    next(b for b in at.button if b.proto.help == "Next nuisance").click().run()
     assert at.selectbox(key="compare_nuisance").value == "sym"
     assert at.session_state["reader"].files
     assert at.session_state["compare_reader"].files
@@ -379,9 +379,9 @@ def test_streamlit_workflow(model, monkeypatch):
     at = AppTest.from_file(Path("datacard_viewer/app.py").resolve(), default_timeout=10).run()
     assert not at.exception
     assert len(at.get("plotly_chart")) == 1
-    next(b for b in at.button if b.label == "→").click().run()
+    next(b for b in at.button if b.proto.help == "Next nuisance").click().run()
     assert at.selectbox(key="nuisance").value == "distort"
-    next(b for b in at.button if b.label == "←").click().run()
+    next(b for b in at.button if b.proto.help == "Previous nuisance").click().run()
     assert at.selectbox(key="nuisance").value == "norm"
     assert not at.exception
     at.checkbox[0].check().run()

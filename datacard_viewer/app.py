@@ -198,13 +198,34 @@ def select_processes(cards, channels):
         dict.fromkeys(p for ch in channels for card in cards for p in card.channels[ch])
     )
     keep_valid_selection("processes", available)
-    processes = st.multiselect(
-        "Processes",
-        available,
-        key="processes",
-        help="Sum the selected processes. A process absent from a channel or card contributes zero yield there.",
-        placeholder="Choose processes",
-    )
+    selected = st.session_state["processes"]
+    with st.container(horizontal=True, gap="xsmall", vertical_alignment="bottom"):
+        if len(selected) == 1:
+            index = available.index(selected[0])
+            st.button(
+                "←",
+                key="previous_process",
+                help="Previous process",
+                disabled=len(available) < 2,
+                on_click=st.session_state.__setitem__,
+                args=("processes", [available[(index - 1) % len(available)]]),
+            )
+        processes = st.multiselect(
+            "Processes",
+            available,
+            key="processes",
+            help="Sum the selected processes. A process absent from a channel or card contributes zero yield there.",
+            placeholder="Choose processes",
+        )
+        if len(selected) == 1:
+            st.button(
+                "→",
+                key="next_process",
+                help="Next process",
+                disabled=len(available) < 2,
+                on_click=st.session_state.__setitem__,
+                args=("processes", [available[(index + 1) % len(available)]]),
+            )
     with st.container(horizontal=True, gap="xsmall"):
         for label, signal, help_text in (
             ("Backgrounds", False, "Select all backgrounds"),
