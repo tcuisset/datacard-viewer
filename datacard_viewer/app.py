@@ -63,7 +63,7 @@ def cancel_scans():
 
 
 @st.fragment(run_every=1)
-def scan_panel(card, mappings, mass, keywords, threshold, channels):
+def scan_panel(card, mappings, mass, keywords, threshold, channels, max_bytes, max_files):
     st.subheader("Nuisance diagnosis")
     st.caption(
         "Candidates are checked separately for every affected channel/process pair. "
@@ -79,10 +79,13 @@ def scan_panel(card, mappings, mass, keywords, threshold, channels):
         disabled=active or not channels,
     ):
         st.session_state["channel_scan"] = Scan(
-            card, mappings, mass, keywords, channels
+            card, mappings, mass, keywords, channels,
+            max_bytes=max_bytes, max_files=max_files,
         ).start()
     if b.button("Scan whole card", disabled=active):
-        st.session_state["scan"] = Scan(card, mappings, mass, keywords).start()
+        st.session_state["scan"] = Scan(
+            card, mappings, mass, keywords, max_bytes=max_bytes, max_files=max_files
+        ).start()
     if c.button("Cancel scan", disabled=not active):
         for key in ("scan", "channel_scan"):
             if st.session_state.get(key):
@@ -765,7 +768,8 @@ def viewer(reader, threshold, after_reader=None):
             comparison_differences(before, after, channels, shortlist)
     if not after:
         scan_panel(
-            before, reader.mappings, reader.mass, reader.keywords, threshold, channels
+            before, reader.mappings, reader.mass, reader.keywords, threshold, channels,
+            reader.max_bytes, reader.max_files,
         )
 
 
@@ -840,7 +844,8 @@ def main():
         if set(keywords) & {"PROCESS", "CHANNEL", "SYSTEMATIC", "MASS"}:
             raise ValueError("Built-in substitution keywords cannot be overridden")
         card = load_card(fingerprint(path))
-        identity = (card.revision, mappings, mass, tuple(keywords.items()))
+        limits = dict(max_bytes=args.max_mb * 1024**2, max_files=args.max_files)
+        identity = (card.revision, mappings, mass, tuple(keywords.items()), args.max_mb, args.max_files)
         if (
             st.session_state.get("reader_identity") != identity
             or "reader" not in st.session_state
@@ -848,18 +853,18 @@ def main():
             cancel_scans()
             if st.session_state.get("reader"):
                 st.session_state["reader"].close()
-            st.session_state["reader"] = Reader(card, mappings, mass, keywords)
+            st.session_state["reader"] = Reader(card, mappings, mass, keywords, **limits)
             st.session_state["reader_identity"] = identity
         reader = st.session_state["reader"]
         after_card = load_card(fingerprint(compare_path)) if compare_path.strip() else None
         after_mappings = parse_pairs(compare_mapping_text)
         if after_card:
-            after_identity = (after_card.revision, after_mappings, mass, tuple(keywords.items()))
+            after_identity = (after_card.revision, after_mappings, mass, tuple(keywords.items()), args.max_mb, args.max_files)
             if st.session_state.get("compare_reader_identity") != after_identity or "compare_reader" not in st.session_state:
                 old = st.session_state.pop("compare_reader", None)
                 if old:
                     old.close()
-                st.session_state["compare_reader"] = Reader(after_card, after_mappings, mass, keywords)
+                st.session_state["compare_reader"] = Reader(after_card, after_mappings, mass, keywords, **limits)
                 st.session_state["compare_reader_identity"] = after_identity
     except Exception as exc:
         st.error(f"Could not open datacard: {exc}")

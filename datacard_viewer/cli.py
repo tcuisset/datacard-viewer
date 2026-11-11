@@ -11,6 +11,14 @@ def card_parser():
     parser = argparse.ArgumentParser(description="Browse Combine datacards and shapes.")
     parser.add_argument("--card", default="", help="Datacard path")
     parser.add_argument(
+        "--max-files", type=int, default=8,
+        help="Maximum open ROOT files per reader (default: 8)",
+    )
+    parser.add_argument(
+        "--max-mb", type=int, default=128,
+        help="Template cache limit in MiB per reader; 0 disables caching (default: 128)",
+    )
+    parser.add_argument(
         "--path-map",
         action="append",
         default=[],

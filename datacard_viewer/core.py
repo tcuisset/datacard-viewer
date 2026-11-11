@@ -663,9 +663,12 @@ def candidate(row, threshold=0.01):
 class Scan:
     """One cancellable worker; scalar snapshots are protected by a lock."""
 
-    def __init__(self, card, mappings=(), mass=125, keywords=None, channels=None):
+    def __init__(
+        self, card, mappings=(), mass=125, keywords=None, channels=None,
+        *, max_bytes=128 * 1024**2, max_files=8,
+    ):
         self.card = card
-        self.reader_args = (card, mappings, mass, keywords)
+        self.reader_args = (card, mappings, mass, keywords, max_bytes, max_files)
         self.channels = set(channels or card.channels)
         self.total = sum(c in self.channels for _, c, _ in card.coefficients)
         self.rows = []

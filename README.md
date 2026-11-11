@@ -42,6 +42,11 @@ Use `--mass 125` for `$MASS` and repeat `--keyword NAME=value` for extra substit
 The UI accepts the same mappings/keywords, one per line. Built-in keywords cannot
 be overridden. Input files are never rewritten.
 
+Use `--max-files 16 --max-mb 256` to allow up to 16 open ROOT files
+and a 256 MiB template cache per reader. Defaults are 8 files and 128 MiB. `--max-mb` is in MiB (1024² bytes),
+with `0` disabling template caching. These limits apply separately to each card
+reader in Inspect/Compare and to each background scan reader.
+
 To compare the original combined card with an optimizer output, pass the second
 card and its own shape-file mappings. The original card uses `output/` references;
 the optimized card points to `optimized.root` beside it:
@@ -211,12 +216,12 @@ uv run ruff check .
 ```
 
 Tests use small weighted ROOT fixtures and, when present, the supplied local analysis
-cards. `hist` is a test dependency, not an application dependency. The parser is
-vendored from Combine v11.1.0; source and license details are in
+cards. `hist` is a test-only dependency. The parser is
+vendored from Combine v11.1.0; details are in
 `datacard_viewer/vendor/README.md`. Application code is divided into the independent
 card/template/scan engine, plotting/export functions, and the Streamlit UI.
 
-Reader caches are bounded to 128 MiB (including array/object overhead), eight open files, and 64 directory
+Reader caches default to 128 MiB (including array/object overhead), eight open files, and 64 directory
 metadata entries per reader. The scan has its own reader, checks cancellation between
 pairs, retains scalar results, and closes its files when finished. Cards and files
 are tracked by resolved path, size, and nanosecond modification time; Reload also

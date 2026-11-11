@@ -197,9 +197,12 @@ def test_before_after_datacard_responses(tmp_path, monkeypatch):
 
     from streamlit.testing.v1 import AppTest
 
-    monkeypatch.setattr(sys, "argv", ["app.py", "--card", str(before_path), "--compare-card", str(after_path)])
+    monkeypatch.setattr(sys, "argv", ["app.py", "--card", str(before_path), "--compare-card", str(after_path), "--max-files", "2", "--max-mb", "1"])
     at = AppTest.from_file(Path("datacard_viewer/app.py").resolve(), default_timeout=15).run()
     assert not at.exception
+    for key in ("reader", "compare_reader"):
+        assert at.session_state[key].max_files == 2
+        assert at.session_state[key].max_bytes == 1024**2
     at.radio(key="viewer_mode").set_value("Compare").run()
     assert not at.exception
     assert at.selectbox(key="compare_nuisance").value is None
@@ -375,9 +378,12 @@ def test_streamlit_workflow(model, monkeypatch):
 
     from streamlit.testing.v1 import AppTest
 
-    monkeypatch.setattr(sys, "argv", ["app.py", "--card", str(model[0])])
+    monkeypatch.setattr(sys, "argv", ["app.py", "--card", str(model[0]), "--max-files", "1", "--max-mb", "0"])
     at = AppTest.from_file(Path("datacard_viewer/app.py").resolve(), default_timeout=10).run()
     assert not at.exception
+    assert at.session_state["reader"].max_files == 1
+    assert at.session_state["reader"].max_bytes == 0
+    assert not at.session_state["reader"].arrays
     assert len(at.get("plotly_chart")) == 1
     next(b for b in at.button if b.proto.help == "Next nuisance").click().run()
     assert at.selectbox(key="nuisance").value == "distort"
@@ -391,6 +397,7 @@ def test_streamlit_workflow(model, monkeypatch):
     at.run()
     assert not at.exception
     assert at.session_state["scan"].done
+    assert at.session_state["scan"].reader_args[-2:] == (0, 1)
     assert len(at.session_state["scan"].snapshot()[0]) == 4
 
 
