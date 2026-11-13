@@ -776,9 +776,6 @@ def viewer(reader, threshold, after_reader=None):
 def main():
     args = arguments()
     st.title("Combine shape viewer")
-    st.caption(
-        "Inspect nominal and systematic ROOT templates · prefit inputs · no ROOT installation required"
-    )
     with st.sidebar:
         with st.form("open_card"):
             path = st.text_input("Datacard path (on this server)", args.card)
