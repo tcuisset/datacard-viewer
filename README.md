@@ -85,6 +85,28 @@ assets are supplied locally; normal use needs no internet after dependency insta
 For `view-card`, set `STREAMLIT_SERVER_PORT=8502` to change the port, or use
 other standard Streamlit environment variables to override server settings.
 
+### OpenShift (S2I)
+
+Use the Python `3.12-ubi9` S2I builder with the repository root as the build
+context. The builder installs the package and its runtime dependencies directly
+from `pyproject.toml` with pip; this does not use `uv.lock` or install development
+dependencies. No custom assemble script or separate requirements file is needed.
+See the [Python S2I image documentation](https://github.com/sclorg/s2i-python-container/blob/master/3.12/README.md).
+
+`.s2i/environment` selects `.s2i/bin/start` through `APP_SCRIPT`. The launcher
+runs Streamlit directly on `0.0.0.0:8080`, overriding the checkout's loopback
+setting. `STREAMLIT_SERVER_ADDRESS` and `STREAMLIT_SERVER_PORT` can override
+these defaults; `PORT` is also accepted when `STREAMLIT_SERVER_PORT` is unset.
+File watching is disabled by default. 
+
+Datacard paths refer to the **pod's filesystem**. 
+
+Optional deployment improvements are HTTP readiness/liveness probes at
+`/_stcore/health` on port 8080, and CPU/memory requests and limits sized for the
+cards in use. The existing Route restricts access to CERN network ranges, so
+browser access requires a permitted network. Streamlit uses WebSockets; the
+Route should forward them along with HTTP traffic.
+
 ## Select shapes
 
 Both modes use the same controls. Choose one or more **Channels** in left-to-right

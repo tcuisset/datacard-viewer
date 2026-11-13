@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+# Override the local-only defaults for the OpenShift Service and Route.
+export STREAMLIT_SERVER_ADDRESS="${STREAMLIT_SERVER_ADDRESS:-0.0.0.0}"
+export STREAMLIT_SERVER_PORT="${STREAMLIT_SERVER_PORT:-${PORT:-8080}}"
+export STREAMLIT_SERVER_HEADLESS="${STREAMLIT_SERVER_HEADLESS:-true}"
+export STREAMLIT_SERVER_FILE_WATCHER_TYPE="${STREAMLIT_SERVER_FILE_WATCHER_TYPE:-none}"
+
+# Run the server directly so it receives the container's termination signals.
+exec python -m streamlit run datacard_viewer/app.py -- "$@"
